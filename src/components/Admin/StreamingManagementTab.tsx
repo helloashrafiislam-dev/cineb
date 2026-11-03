@@ -327,7 +327,7 @@ export const StreamingManagementTab: React.FC = () => {
                               }, `Selected ${providerLabel(String(a.providerName))} for TMDB ${a.tmdbId}`)
                             }
                             className="px-2 py-1 rounded-md bg-sky-950 text-sky-200 hover:bg-sky-900 cursor-pointer"
-                            title="Manually select this authorized source"
+                            title="Manually select this provider source"
                           >
                             Use
                           </button>
@@ -419,7 +419,7 @@ export const StreamingManagementTab: React.FC = () => {
                 rel="noopener noreferrer"
                 className="inline-flex text-xs font-semibold text-sky-400 hover:text-sky-300"
               >
-                Open authorized player
+                Open provider player
               </a>
             )}
           </div>

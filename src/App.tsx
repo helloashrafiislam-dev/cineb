@@ -25,13 +25,28 @@ import { SidebarAds } from './components/Ads/SidebarAds.tsx';
 import { PopupAdManager } from './components/Ads/PopupAdManager.tsx';
 import { Reveal, Stagger, StaggerItem } from './components/motion/Reveal.tsx';
 import { PageTransition } from './components/motion/PageTransition.tsx';
-import { tryCardClickAd, openOwnerAdOnce, hasDirectStreamUrl } from './utils/cardClickAdGate.ts';
+import { hasDirectStreamUrl } from './utils/cardClickAdGate.ts';
 import {
   buildTmdbMoviePath,
   buildLocalMoviePath,
   parseDetailsRoute
 } from './utils/slug.ts';
 import { BottomAdsRow } from './components/Ads/BottomAdsRow.tsx';
+import { LegalPages, LegalPageId } from './components/Legal/LegalPages.tsx';
+
+const LEGAL_PATHS: Record<string, LegalPageId> = {
+  '/about': 'about',
+  '/contact': 'contact',
+  '/privacy': 'privacy',
+  '/terms': 'terms',
+  '/copyright': 'copyright',
+  '/dmca': 'dmca',
+  '/disclaimer': 'disclaimer'
+};
+
+function parseLegalRoute(pathname: string): LegalPageId | null {
+  return LEGAL_PATHS[pathname] || null;
+}
 
 function isAdminPath(pathname: string = window.location.pathname) {
   return pathname === '/admin' || pathname.startsWith('/admin/');
@@ -51,6 +66,7 @@ export default function App() {
   const detailsRoute = parseDetailsRoute(pathname);
   const detailsMovieId = detailsRoute?.kind === 'local' ? detailsRoute.movieId : null;
   const tmdbDetailsId = detailsRoute?.kind === 'tmdb' ? detailsRoute.tmdbId : null;
+  const legalPage = parseLegalRoute(pathname);
 
   // Admin Auth State
   const [adminUser, setAdminUser] = useState<AdminUser | null>(authStorage.getUser());
@@ -191,16 +207,6 @@ export default function App() {
       // TV shows are browse/metadata only in this catalog
       window.open(`https://www.themoviedb.org/tv/${item.tmdbId}`, '_blank', 'noopener,noreferrer');
       return;
-    }
-
-    // If this title already has an owner direct link, skip chance card-ads (ad runs on Play)
-    const local = item.localMovieId
-      ? allMovies.find(m => m.id === item.localMovieId)
-      : allMovies.find(m => m.tmdbId === item.tmdbId);
-    if (!hasDirectStreamUrl(local)) {
-      if (tryCardClickAd(`tmdb-${item.tmdbId}`, adSettings, adSlots)) {
-        return;
-      }
     }
 
     navigateTo(buildTmdbMoviePath(item.title, item.tmdbId));
@@ -409,29 +415,22 @@ export default function App() {
     setCurrentTab(tab);
   };
 
-  // Playback & Details triggers
+  // Playback & Details triggers (no click-hijack ads — AdSense invalid traffic risk)
   const handlePlayMovie = (movie: Movie) => {
-    // Direct-link titles: open owner's ad once in a new tab, then play the link
-    if (hasDirectStreamUrl(movie)) {
-      openOwnerAdOnce(`direct-play-${movie.id}`, adSettings, adSlots);
-      setActivePlaybackMovie(movie);
-      return;
-    }
     setActivePlaybackMovie(movie);
   };
 
   const handleOpenDetails = (movie: Movie) => {
-    // Direct-link movies skip chance card-ads; their ad fires once on Play instead
-    if (!hasDirectStreamUrl(movie)) {
-      if (tryCardClickAd(`movie-${movie.id}`, adSettings, adSlots)) {
-        return;
-      }
-    }
     if (movie.tmdbId) {
       navigateTo(buildTmdbMoviePath(movie.title, movie.tmdbId));
       return;
     }
     navigateTo(buildLocalMoviePath(movie.title, movie.id));
+  };
+
+  const openLegalPage = (page: LegalPageId) => {
+    const entry = Object.entries(LEGAL_PATHS).find(([, id]) => id === page);
+    navigateTo(entry?.[0] || '/');
   };
 
   const goHome = useCallback(() => {
@@ -448,6 +447,16 @@ export default function App() {
     setAdminUser(null);
     navigateTo('/');
   };
+
+  if (legalPage) {
+    return (
+      <LegalPages
+        page={legalPage}
+        onBack={goHome}
+        onNavigateLegal={openLegalPage}
+      />
+    );
+  }
 
   // Dedicated /admin route — login page or dashboard (no public UI button)
   if (onAdminRoute) {
@@ -890,36 +899,64 @@ export default function App() {
       <footer className="mt-12 border-t border-neutral-900 bg-neutral-950/80 py-12 px-4 sm:px-6 lg:px-8">
         <Reveal variant="fade-up">
           <div className="max-w-7xl mx-auto flex flex-col gap-8 text-xs text-neutral-500">
-            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center text-white">
                   <Film className="w-4 h-4" />
                 </div>
                 <div>
-                  <p className="font-bold text-neutral-300">CineStream Cinema</p>
-                  <p>© 2026 CineStream Inc. All streaming rights reserved.</p>
+                  <p className="font-bold text-neutral-300">CineStream</p>
+                  <p>
+                    Movie discovery catalog. We do not claim ownership of studio titles.
+                    Playback appears only for compliance-verified sources.
+                  </p>
+                  <p className="mt-1 text-neutral-600">© 2026 CineStream. All site rights reserved.</p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-6">
-                <button
-                  onClick={() => handleSelectTab('home')}
-                  className="hover:text-neutral-300 transition-colors cursor-pointer"
-                >
-                  Home
-                </button>
-                <button
-                  onClick={() => handleSelectTab('trending')}
-                  className="hover:text-neutral-300 transition-colors cursor-pointer"
-                >
-                  Trending
-                </button>
-                <button
-                  onClick={() => handleSelectTab('categories')}
-                  className="hover:text-neutral-300 transition-colors cursor-pointer"
-                >
-                  Categories
-                </button>
+              <div className="flex flex-col sm:flex-row gap-6 sm:gap-10">
+                <div className="flex flex-wrap gap-x-4 gap-y-2">
+                  <button
+                    onClick={() => handleSelectTab('home')}
+                    className="hover:text-neutral-300 transition-colors cursor-pointer"
+                  >
+                    Home
+                  </button>
+                  <button
+                    onClick={() => handleSelectTab('trending')}
+                    className="hover:text-neutral-300 transition-colors cursor-pointer"
+                  >
+                    Trending
+                  </button>
+                  <button
+                    onClick={() => handleSelectTab('categories')}
+                    className="hover:text-neutral-300 transition-colors cursor-pointer"
+                  >
+                    Categories
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-2 max-w-md">
+                  {(
+                    [
+                      ['about', 'About'],
+                      ['contact', 'Contact'],
+                      ['privacy', 'Privacy'],
+                      ['terms', 'Terms'],
+                      ['copyright', 'Copyright'],
+                      ['dmca', 'DMCA'],
+                      ['disclaimer', 'Disclaimer']
+                    ] as Array<[LegalPageId, string]>
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => openLegalPage(id)}
+                      className="hover:text-neutral-300 transition-colors cursor-pointer"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             {(tmdbConfigured || tmdbLoading) && <TmdbAttribution />}

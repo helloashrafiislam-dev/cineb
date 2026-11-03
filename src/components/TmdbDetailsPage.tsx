@@ -26,6 +26,7 @@ import { ProviderPlayer } from './ProviderPlayer.tsx';
 import { AdBanner } from './Ads/AdBanner.tsx';
 import { BottomAdsRow } from './Ads/BottomAdsRow.tsx';
 import { SidebarAds } from './Ads/SidebarAds.tsx';
+import { LegalMiniFooter } from './Legal/LegalMiniFooter.tsx';
 
 interface TmdbDetailsPageProps {
   tmdbId: number;
@@ -242,7 +243,11 @@ export const TmdbDetailsPage: React.FC<TmdbDetailsPageProps> = ({
               </div>
 
               <p className="text-sm sm:text-base text-neutral-300 leading-relaxed">
-                {details.overview || 'No overview available.'}
+                {details.overview || 'No overview available for this title yet.'}
+              </p>
+              <p className="text-[11px] text-neutral-600 leading-relaxed">
+                Synopsis and credits are provided for discovery. CineStream does not claim ownership of
+                this title. Official trailer links open on YouTube when available.
               </p>
 
               {showAds && adSettings && (
@@ -255,17 +260,6 @@ export const TmdbDetailsPage: React.FC<TmdbDetailsPageProps> = ({
               )}
 
               <div className="flex flex-wrap items-center gap-3 pt-1">
-                {showAds && adSettings && (
-                  <div className="hidden lg:block max-w-[280px]">
-                    <AdBanner
-                      position="movie_details_before_watch"
-                      slots={adSlots}
-                      settings={adSettings}
-                      className="my-0 scale-90"
-                    />
-                  </div>
-                )}
-
                 {canPlayLocal && localMovie && (
                   <button
                     onClick={() => onPlayLocal(localMovie)}
@@ -292,10 +286,19 @@ export const TmdbDetailsPage: React.FC<TmdbDetailsPageProps> = ({
                   </a>
                 )}
 
-                {streamingUnavailable && !canPlay && (
-                  <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-neutral-900 border border-neutral-700 text-neutral-400 text-xs">
-                    <Film className="w-4 h-4" />
-                    Streaming currently unavailable
+                {(streamingUnavailable || streamInfo?.complianceBlockReason) && !canPlay && (
+                  <div className="flex flex-col gap-1 px-4 py-2.5 rounded-xl bg-neutral-900 border border-neutral-700 text-neutral-400 text-xs max-w-md">
+                    <span className="flex items-center gap-2">
+                      <Film className="w-4 h-4 shrink-0" />
+                      {streamInfo?.complianceBlockReason
+                        ? 'Playback not authorized'
+                        : 'Streaming currently unavailable'}
+                    </span>
+                    {streamInfo?.complianceBlockReason && (
+                      <span className="text-neutral-500 leading-relaxed pl-6">
+                        {streamInfo.complianceBlockReason}
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -430,6 +433,7 @@ export const TmdbDetailsPage: React.FC<TmdbDetailsPageProps> = ({
           )}
 
           <TmdbAttribution className="pt-4 border-t border-neutral-800" />
+          <LegalMiniFooter />
         </motion.div>
       )}
     </div>

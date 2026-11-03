@@ -418,13 +418,13 @@
   ],
   "adSettings": {
     "masterEnabled": true,
-    "popupEnabled": true,
+    "popupEnabled": false,
     "popupFrequencyMinutes": 30,
     "popupNetwork": "monetag",
     "popupCode": "<!-- Monetag Smart Popunder Tag (Policy-Compliant frequency-capped) -->",
     "popupTargetUrl": "https://nordvpn.com/special-deal-4k-streaming",
-    "cardClickAdEnabled": true,
-    "cardClickAdChancePercent": 40,
+    "cardClickAdEnabled": false,
+    "cardClickAdChancePercent": 0,
     "homeAdsEnabled": true,
     "detailsAdsEnabled": true,
     "playerAdsEnabled": true,
@@ -505,5 +505,53 @@
   ],
   "streamAssociations": [],
   "movieStreamPreferences": [],
-  "streamingSyncMeta": {}
+  "streamingSyncMeta": {},
+  "contentProviders": [
+    {
+      "id": "provider-nexstream",
+      "providerKey": "nexstream",
+      "displayName": "NexStream",
+      "sourceUrl": "https://api.codespecters.com",
+      "authorizationStatus": "unverified",
+      "authorizationEvidence": "",
+      "restrictions": "Commercial embedding rights are not verified in this deployment. Do not treat public embed URLs as a license.",
+      "notes": "Third-party embed provider. Mark Verified only after you obtain written authorization covering commercial use and AdSense-funded pages.",
+      "createdAt": "2026-11-03T19:38:35.726Z",
+      "updatedAt": "2026-11-03T19:38:35.726Z"
+    },
+    {
+      "id": "provider-vidsrc",
+      "providerKey": "vidsrc",
+      "displayName": "Vidsrc",
+      "sourceUrl": "https://vidsrc.mov",
+      "authorizationStatus": "unverified",
+      "authorizationEvidence": "",
+      "restrictions": "Public embed endpoints do not equal permission to commercially distribute copyrighted titles.",
+      "notes": "Third-party embed provider. Keep Disabled or Unverified unless you hold documented rights.",
+      "createdAt": "2026-11-03T19:38:35.726Z",
+      "updatedAt": "2026-11-03T19:38:35.726Z"
+    },
+    {
+      "id": "provider-owner-direct",
+      "providerKey": "owner_direct",
+      "displayName": "Owner Direct Stream URL",
+      "sourceUrl": "admin-managed",
+      "authorizationStatus": "unverified",
+      "authorizationEvidence": "",
+      "restrictions": "Admin-supplied streamingUrl values play only when this source is Verified, or when requireVerifiedProvidersForPlayback is turned off (not recommended).",
+      "notes": "Use only for titles you own or are contractually authorized to stream. Record license evidence before marking Verified.",
+      "createdAt": "2026-11-03T19:38:35.726Z",
+      "updatedAt": "2026-11-03T19:38:35.726Z"
+    }
+  ],
+  "copyrightComplaints": [],
+  "complianceSettings": {
+    "contactEmail": "contact@example.com",
+    "dmcaEmail": "contact@example.com",
+    "legalEntityName": "CineStream",
+    "siteName": "CineStream",
+    "requireVerifiedProvidersForPlayback": true
+  },
+  "disputedTmdbIds": [],
+  "disputedMovieIds": []
 }

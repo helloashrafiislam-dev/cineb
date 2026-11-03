@@ -1,6 +1,28 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import {
+  ContentProviderRecord,
+  CopyrightComplaint,
+  SiteComplianceSettings,
+  createDefaultComplianceSettings,
+  createDefaultProviders,
+  getEnvSiteCompliance,
+  isProviderAuthorizedForPlayback,
+  type ContentProviderKey,
+  type ComplaintStatus,
+  type ProviderAuthStatus
+} from './compliance.ts';
+
+export type {
+  ContentProviderRecord,
+  CopyrightComplaint,
+  SiteComplianceSettings,
+  ContentProviderKey,
+  ComplaintStatus,
+  ProviderAuthStatus
+};
+export { isProviderAuthorizedForPlayback, getEnvSiteCompliance };
 
 export interface Movie {
   id: string;
@@ -240,6 +262,13 @@ export interface DatabaseSchema {
   streamAssociations: StreamAssociation[];
   movieStreamPreferences: MovieStreamPreference[];
   streamingSyncMeta: StreamingSyncMeta;
+  contentProviders: ContentProviderRecord[];
+  copyrightComplaints: CopyrightComplaint[];
+  complianceSettings: SiteComplianceSettings;
+  /** Titles disabled due to copyright disputes (by TMDB id) */
+  disputedTmdbIds: number[];
+  /** Local catalog movie ids disabled due to copyright disputes */
+  disputedMovieIds: string[];
 }
 
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -266,13 +295,14 @@ const INITIAL_MOVIES: Movie[] = [];
 
 const INITIAL_AD_SETTINGS: AdSettings = {
   masterEnabled: true,
-  popupEnabled: true,
+  // Popups / card-hijack clicks are high AdSense invalid-traffic risks — off by default
+  popupEnabled: false,
   popupFrequencyMinutes: 30,
-  popupNetwork: 'monetag',
-  popupCode: '<!-- Monetag Smart Popunder Tag (Policy-Compliant frequency-capped) -->',
-  popupTargetUrl: 'https://nordvpn.com/special-deal-4k-streaming',
-  cardClickAdEnabled: true,
-  cardClickAdChancePercent: 40,
+  popupNetwork: 'adsense',
+  popupCode: '<!-- Prefer labeled display units; avoid forced popunders for AdSense -->',
+  popupTargetUrl: '',
+  cardClickAdEnabled: false,
+  cardClickAdChancePercent: 0,
   homeAdsEnabled: true,
   detailsAdsEnabled: true,
   playerAdsEnabled: true,
@@ -814,6 +844,72 @@ class Database {
           needsSave = true;
         }
 
+        // Content compliance registry (providers default unverified — never auto-authorized)
+        if (!Array.isArray(parsed.contentProviders) || parsed.contentProviders.length === 0) {
+          parsed.contentProviders = createDefaultProviders();
+          needsSave = true;
+        } else {
+          const keys = new Set(parsed.contentProviders.map(p => p.providerKey));
+          for (const seed of createDefaultProviders()) {
+            if (!keys.has(seed.providerKey)) {
+              parsed.contentProviders.push(seed);
+              needsSave = true;
+            }
+          }
+        }
+
+        if (!Array.isArray(parsed.copyrightComplaints)) {
+          parsed.copyrightComplaints = [];
+          needsSave = true;
+        }
+
+        if (!parsed.complianceSettings || typeof parsed.complianceSettings !== 'object') {
+          parsed.complianceSettings = createDefaultComplianceSettings();
+          needsSave = true;
+        } else {
+          const env = getEnvSiteCompliance();
+          parsed.complianceSettings = {
+            ...createDefaultComplianceSettings(),
+            ...parsed.complianceSettings,
+            // Env overrides empty placeholders so operators can configure contact without DB edit
+            contactEmail:
+              parsed.complianceSettings.contactEmail &&
+              parsed.complianceSettings.contactEmail !== 'contact@example.com'
+                ? parsed.complianceSettings.contactEmail
+                : env.contactEmail,
+            dmcaEmail:
+              parsed.complianceSettings.dmcaEmail &&
+              parsed.complianceSettings.dmcaEmail !== 'contact@example.com'
+                ? parsed.complianceSettings.dmcaEmail
+                : env.dmcaEmail,
+            legalEntityName: parsed.complianceSettings.legalEntityName || env.legalEntityName,
+            siteName: parsed.complianceSettings.siteName || env.siteName
+          };
+        }
+
+        if (!Array.isArray(parsed.disputedTmdbIds)) {
+          parsed.disputedTmdbIds = [];
+          needsSave = true;
+        }
+        if (!Array.isArray(parsed.disputedMovieIds)) {
+          parsed.disputedMovieIds = [];
+          needsSave = true;
+        }
+
+        // AdSense-oriented safety: turn off deceptive click-hijack / popunder patterns
+        if (
+          parsed.adSettings?.cardClickAdEnabled === true ||
+          parsed.adSettings?.popupEnabled === true
+        ) {
+          parsed.adSettings = {
+            ...parsed.adSettings,
+            cardClickAdEnabled: false,
+            cardClickAdChancePercent: 0,
+            popupEnabled: false
+          };
+          needsSave = true;
+        }
+
         if (needsSave) {
           this.saveData(parsed);
         }
@@ -846,7 +942,12 @@ class Database {
       adEvents: [],
       streamAssociations: [],
       movieStreamPreferences: [],
-      streamingSyncMeta: {}
+      streamingSyncMeta: {},
+      contentProviders: createDefaultProviders(),
+      copyrightComplaints: [],
+      complianceSettings: createDefaultComplianceSettings(),
+      disputedTmdbIds: [],
+      disputedMovieIds: []
     };
 
     this.saveData(initialData);
@@ -1624,12 +1725,222 @@ class Database {
     };
   }
 
+  // --- Content compliance ---
+  public getComplianceSettings(): SiteComplianceSettings {
+    const env = getEnvSiteCompliance();
+    const stored = this.data.complianceSettings || createDefaultComplianceSettings();
+    return {
+      ...createDefaultComplianceSettings(),
+      ...stored,
+      contactEmail:
+        stored.contactEmail && stored.contactEmail !== 'contact@example.com'
+          ? stored.contactEmail
+          : env.contactEmail,
+      dmcaEmail:
+        stored.dmcaEmail && stored.dmcaEmail !== 'contact@example.com'
+          ? stored.dmcaEmail
+          : env.dmcaEmail,
+      legalEntityName: stored.legalEntityName || env.legalEntityName,
+      siteName: stored.siteName || env.siteName
+    };
+  }
+
+  public updateComplianceSettings(
+    updates: Partial<SiteComplianceSettings>
+  ): SiteComplianceSettings {
+    this.data.complianceSettings = {
+      ...this.getComplianceSettings(),
+      ...updates
+    };
+    this.saveData(this.data);
+    return this.getComplianceSettings();
+  }
+
+  public getContentProviders(): ContentProviderRecord[] {
+    if (!Array.isArray(this.data.contentProviders) || this.data.contentProviders.length === 0) {
+      this.data.contentProviders = createDefaultProviders();
+      this.saveData(this.data);
+    }
+    return this.data.contentProviders.map(p => ({ ...p }));
+  }
+
+  public getContentProvider(key: ContentProviderKey | string): ContentProviderRecord | undefined {
+    return this.getContentProviders().find(p => p.providerKey === key);
+  }
+
+  public isProviderPlaybackAllowed(key: ContentProviderKey | string): boolean {
+    const provider = this.getContentProvider(key);
+    return isProviderAuthorizedForPlayback(provider, this.getComplianceSettings());
+  }
+
+  public updateContentProvider(
+    providerKey: ContentProviderKey | string,
+    updates: Partial<
+      Pick<
+        ContentProviderRecord,
+        | 'authorizationStatus'
+        | 'authorizationEvidence'
+        | 'restrictions'
+        | 'notes'
+        | 'sourceUrl'
+        | 'displayName'
+        | 'reviewedBy'
+      >
+    >
+  ): ContentProviderRecord | null {
+    const index = (this.data.contentProviders || []).findIndex(p => p.providerKey === providerKey);
+    if (index === -1) return null;
+
+    const existing = this.data.contentProviders[index];
+    const nextStatus = updates.authorizationStatus ?? existing.authorizationStatus;
+    // Never invent licensing — empty evidence cannot be Verified
+    if (nextStatus === 'verified' && !(updates.authorizationEvidence ?? existing.authorizationEvidence)?.trim()) {
+      throw new Error(
+        'Cannot mark a provider as Verified without recording authorization or licensing evidence.'
+      );
+    }
+
+    const updated: ContentProviderRecord = {
+      ...existing,
+      ...updates,
+      providerKey: existing.providerKey,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      lastReviewedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.data.contentProviders[index] = updated;
+    this.saveData(this.data);
+    return { ...updated };
+  }
+
+  public isTmdbDisputed(tmdbId: number): boolean {
+    return (this.data.disputedTmdbIds || []).includes(tmdbId);
+  }
+
+  public isMovieDisputed(movieId: string): boolean {
+    return (this.data.disputedMovieIds || []).includes(movieId);
+  }
+
+  public setTmdbDisputed(tmdbId: number, disputed: boolean): void {
+    const set = new Set(this.data.disputedTmdbIds || []);
+    if (disputed) set.add(tmdbId);
+    else set.delete(tmdbId);
+    this.data.disputedTmdbIds = Array.from(set);
+    this.saveData(this.data);
+  }
+
+  public setMovieDisputed(movieId: string, disputed: boolean): void {
+    const set = new Set(this.data.disputedMovieIds || []);
+    if (disputed) set.add(movieId);
+    else set.delete(movieId);
+    this.data.disputedMovieIds = Array.from(set);
+    this.saveData(this.data);
+  }
+
+  public getCopyrightComplaints(): CopyrightComplaint[] {
+    return [...(this.data.copyrightComplaints || [])].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  public getCopyrightComplaint(id: string): CopyrightComplaint | undefined {
+    return (this.data.copyrightComplaints || []).find(c => c.id === id);
+  }
+
+  public createCopyrightComplaint(
+    input: Omit<
+      CopyrightComplaint,
+      'id' | 'status' | 'adminNotes' | 'disabledTmdbIds' | 'disabledMovieIds' | 'createdAt' | 'updatedAt' | 'resolvedAt'
+    >
+  ): CopyrightComplaint {
+    const complaint: CopyrightComplaint = {
+      ...input,
+      id: `dmca-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      status: 'received',
+      adminNotes: '',
+      disabledTmdbIds: [],
+      disabledMovieIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    if (!this.data.copyrightComplaints) this.data.copyrightComplaints = [];
+    this.data.copyrightComplaints.unshift(complaint);
+    this.saveData(this.data);
+    return { ...complaint };
+  }
+
+  public updateCopyrightComplaint(
+    id: string,
+    updates: Partial<
+      Pick<
+        CopyrightComplaint,
+        'status' | 'adminNotes' | 'disabledTmdbIds' | 'disabledMovieIds' | 'resolvedAt'
+      >
+    >
+  ): CopyrightComplaint | null {
+    const index = (this.data.copyrightComplaints || []).findIndex(c => c.id === id);
+    if (index === -1) return null;
+    const existing = this.data.copyrightComplaints[index];
+    const updated: CopyrightComplaint = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString()
+    };
+    if (
+      updates.status &&
+      (updates.status === 'resolved' || updates.status === 'rejected' || updates.status === 'content_disabled') &&
+      !updated.resolvedAt
+    ) {
+      updated.resolvedAt = new Date().toISOString();
+    }
+    this.data.copyrightComplaints[index] = updated;
+    this.saveData(this.data);
+    return { ...updated };
+  }
+
+  /**
+   * Immediately disable playback for disputed titles (associations + dispute lists).
+   */
+  public disableDisputedContent(options: {
+    tmdbIds?: number[];
+    movieIds?: string[];
+  }): { disabledAssociations: number } {
+    let disabledAssociations = 0;
+    for (const tmdbId of options.tmdbIds || []) {
+      this.setTmdbDisputed(tmdbId, true);
+      const assocs = this.getStreamAssociationsByTmdbId(tmdbId);
+      for (const assoc of assocs) {
+        if (!assoc.disabled) {
+          this.updateStreamAssociation(
+            assoc.tmdbId,
+            {
+              disabled: true,
+              streamStatus: 'disabled',
+              lastError: 'Disabled due to copyright complaint'
+            },
+            normalizeProviderKey(assoc.providerName)
+          );
+          disabledAssociations += 1;
+        }
+      }
+    }
+    for (const movieId of options.movieIds || []) {
+      this.setMovieDisputed(movieId, true);
+    }
+    return { disabledAssociations };
+  }
+
   // --- Reset catalog (no demo movies) & restore default ads/categories ---
   public resetToDefault(): void {
     this.data.movies = [];
     this.data.categories = [...INITIAL_CATEGORIES];
     this.data.adSlots = [...INITIAL_AD_SLOTS];
     this.data.adSettings = { ...INITIAL_AD_SETTINGS };
+    this.data.contentProviders = createDefaultProviders();
+    this.data.complianceSettings = createDefaultComplianceSettings();
     this.saveData(this.data);
   }
 

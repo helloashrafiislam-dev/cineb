@@ -10,7 +10,10 @@ import {
   TmdbDiscoveryItem,
   TmdbMovieFullDetails,
   StreamAssociation,
-  StreamingAdminStats
+  StreamingAdminStats,
+  ContentProviderRecord,
+  CopyrightComplaint,
+  SiteComplianceSettings
 } from '../types.ts';
 
 const TOKEN_KEY = 'cinestream_admin_token';
@@ -468,6 +471,82 @@ export const api = {
     return apiRequest(`/api/admin/streaming/${tmdbId}/refresh`, {
       method: 'POST',
       body: JSON.stringify(options)
+    });
+  },
+
+  // Site legal + DMCA + compliance
+  async getSiteLegal(): Promise<{
+    siteName: string;
+    legalEntityName: string;
+    contactEmail: string;
+    dmcaEmail: string;
+    requireVerifiedProvidersForPlayback: boolean;
+  }> {
+    const res = await apiRequest<{
+      siteName: string;
+      legalEntityName: string;
+      contactEmail: string;
+      dmcaEmail: string;
+      requireVerifiedProvidersForPlayback: boolean;
+    }>('/api/site/legal');
+    return res;
+  },
+
+  async submitDmcaComplaint(payload: {
+    complainantName: string;
+    complainantEmail: string;
+    complainantOrganization?: string;
+    copyrightedWork: string;
+    infringingUrl: string;
+    tmdbId?: number;
+    movieId?: string;
+    description: string;
+    goodFaithAffirmation: boolean;
+    accuracyAffirmation: boolean;
+  }): Promise<{ complaintId: string; message: string }> {
+    return apiRequest('/api/dmca/complaints', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  },
+
+  async getComplianceProviders(): Promise<{
+    settings: SiteComplianceSettings;
+    providers: ContentProviderRecord[];
+  }> {
+    return apiRequest('/api/admin/compliance/providers');
+  },
+
+  async updateComplianceSettings(
+    updates: Partial<SiteComplianceSettings>
+  ): Promise<{ settings: SiteComplianceSettings }> {
+    return apiRequest('/api/admin/compliance/settings', {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    });
+  },
+
+  async updateComplianceProvider(
+    providerKey: string,
+    updates: Partial<ContentProviderRecord>
+  ): Promise<{ provider: ContentProviderRecord }> {
+    return apiRequest(`/api/admin/compliance/providers/${encodeURIComponent(providerKey)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    });
+  },
+
+  async getComplianceComplaints(): Promise<{ complaints: CopyrightComplaint[] }> {
+    return apiRequest('/api/admin/compliance/complaints');
+  },
+
+  async updateComplianceComplaint(
+    id: string,
+    body: Record<string, unknown>
+  ): Promise<{ complaint: CopyrightComplaint }> {
+    return apiRequest(`/api/admin/compliance/complaints/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body)
     });
   }
 };

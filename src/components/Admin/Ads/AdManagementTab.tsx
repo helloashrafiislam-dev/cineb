@@ -286,39 +286,28 @@ export const AdManagementTab: React.FC<AdManagementTabProps> = ({ onAdDataChange
                 />
               </div>
 
-              <label className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-950 border border-neutral-800/80 cursor-pointer">
+              <div className="p-2.5 rounded-xl bg-red-950/30 border border-red-900/50 text-[11px] text-red-200/90 space-y-1">
+                <p className="font-bold text-red-300">AdSense policy: card-click ads disabled</p>
+                <p>
+                  Hijacking movie-card or Play clicks to open ads is deceptive and risks invalid
+                  traffic. The site code ignores cardClickAdEnabled even if re-enabled here.
+                </p>
+              </div>
+
+              <label className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-950 border border-neutral-800/80 opacity-60 cursor-not-allowed">
                 <div>
-                  <span className="block text-neutral-200">Movie Card Click → Ad</span>
+                  <span className="block text-neutral-200">Movie Card Click → Ad (blocked)</span>
                   <span className="text-[10px] text-neutral-500">
-                    Sometimes 1st click opens ad; 2nd click opens details
+                    Permanently disabled in application code for compliance
                   </span>
                 </div>
                 <input
                   type="checkbox"
-                  checked={settings.cardClickAdEnabled ?? true}
-                  onChange={e => handleUpdateSettings({ cardClickAdEnabled: e.target.checked })}
+                  checked={false}
+                  disabled
                   className="w-4 h-4 accent-amber-500 rounded"
                 />
               </label>
-
-              <div>
-                <label className="block text-neutral-400 mb-1">
-                  Card Click Ad Chance ({settings.cardClickAdChancePercent ?? 40}%)
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={settings.cardClickAdChancePercent ?? 40}
-                  onChange={e =>
-                    handleUpdateSettings({
-                      cardClickAdChancePercent: parseInt(e.target.value, 10) || 0
-                    })
-                  }
-                  className="w-full accent-amber-500"
-                />
-              </div>
             </div>
           </div>
 

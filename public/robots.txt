@@ -1,0 +1,17 @@
+User-agent: *
+Allow: /
+
+# Legal & policy pages
+Allow: /about
+Allow: /contact
+Allow: /privacy
+Allow: /terms
+Allow: /copyright
+Allow: /dmca
+Allow: /disclaimer
+
+# Do not index admin or API shells
+Disallow: /admin
+Disallow: /api/
+
+Sitemap: /sitemap.xml

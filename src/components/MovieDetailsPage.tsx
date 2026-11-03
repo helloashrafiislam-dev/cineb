@@ -17,6 +17,7 @@ import { BottomAdsRow } from './Ads/BottomAdsRow.tsx';
 import { SidebarAds } from './Ads/SidebarAds.tsx';
 import { Stagger, StaggerItem } from './motion/Reveal.tsx';
 import { TmdbAttribution } from './TmdbAttribution.tsx';
+import { LegalMiniFooter } from './Legal/LegalMiniFooter.tsx';
 
 interface LocalTmdbExtras {
   cast?: TmdbPersonCredit[];
@@ -415,6 +416,8 @@ export const MovieDetailsPage: React.FC<MovieDetailsPageProps> = ({
               />
             </div>
           )}
+
+          <LegalMiniFooter />
         </div>
       </motion.div>
     </div>

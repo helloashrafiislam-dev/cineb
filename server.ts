@@ -26,10 +26,32 @@ const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'cinestream-secure-token-secret-key-2026';
 
 function hasPlayableStream(tmdbId?: number, local?: Movie | null): boolean {
-  if (local?.streamingUrl && String(local.streamingUrl).trim()) return true;
+  if (tmdbId && db.isTmdbDisputed(tmdbId)) return false;
+  if (local?.id && db.isMovieDisputed(local.id)) return false;
+
+  if (local?.streamingUrl && String(local.streamingUrl).trim()) {
+    // Owner-supplied direct URLs still require the owner_direct source to be authorized
+    if (db.isProviderPlaybackAllowed('owner_direct')) return true;
+  }
   if (!tmdbId) return false;
-  const assoc = db.getStreamAssociationByTmdbId(tmdbId);
-  return Boolean(assoc && assoc.streamStatus === 'available' && !assoc.disabled);
+  const stream = publicStreamPayload(db.getStreamAssociationByTmdbId(tmdbId));
+  return Boolean(stream.hasStream && stream.playerPath);
+}
+
+/** Strip unauthorized / disputed playback URLs from public movie payloads */
+function sanitizePublicMovie(movie: Movie): Movie {
+  const disputed =
+    db.isMovieDisputed(movie.id) ||
+    (movie.tmdbId != null && db.isTmdbDisputed(movie.tmdbId));
+  const ownerAllowed = db.isProviderPlaybackAllowed('owner_direct');
+  if (disputed || !ownerAllowed) {
+    return { ...movie, streamingUrl: '' };
+  }
+  return movie;
+}
+
+function sanitizePublicMovies(movies: Movie[]): Movie[] {
+  return movies.map(sanitizePublicMovie);
 }
 
 function attachLocalPlaybackFlags<T extends { tmdbId: number }>(items: T[]) {
@@ -152,7 +174,8 @@ app.get('/api/movies', (req: Request, res: Response) => {
       movies = movies.filter(m => m.category.toLowerCase().includes(cTerm));
     }
 
-    res.json({ success: true, count: movies.length, movies });
+    const publicMovies = sanitizePublicMovies(movies);
+    res.json({ success: true, count: publicMovies.length, movies: publicMovies });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to retrieve movies', details: err.message });
   }
@@ -161,7 +184,7 @@ app.get('/api/movies', (req: Request, res: Response) => {
 // Featured Hero & Sections
 app.get('/api/featured', (req: Request, res: Response) => {
   try {
-    const published = db.getAllMovies(true);
+    const published = sanitizePublicMovies(db.getAllMovies(true));
     const heroMovie = published.find(m => m.isFeatured) || published[0];
     const trending = published.filter(m => m.isTrending);
     const popular = published.filter(m => m.isPopular);
@@ -215,7 +238,12 @@ app.get('/api/movies/:id', async (req: Request, res: Response) => {
       }
     }
 
-    res.json({ success: true, movie, related, tmdbExtras });
+    res.json({
+      success: true,
+      movie: sanitizePublicMovie(movie),
+      related: sanitizePublicMovies(related),
+      tmdbExtras
+    });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to load movie details', details: err.message });
   }
@@ -412,7 +440,7 @@ app.get('/api/tmdb/movie/:tmdbId', async (req: Request, res: Response) => {
         ...mapped,
         similar: mapListResults(mapped.similar),
         recommendations: mapListResults(mapped.recommendations),
-        localMovie,
+        localMovie: localMovie ? sanitizePublicMovie(localMovie) : null,
         hasPlayback: hasPlayableStream(tmdbId, localMovie),
         nexStream: stream,
         stream
@@ -574,6 +602,22 @@ app.get('/api/nexstream/player/:tmdbId', (req: Request, res: Response) => {
       return res.status(404).send(playerErrorHtml('Streaming currently unavailable for this title.'));
     }
 
+    if (db.isTmdbDisputed(tmdbId)) {
+      return res
+        .status(451)
+        .send(playerErrorHtml('Playback disabled due to a copyright complaint under review.'));
+    }
+
+    if (!db.isProviderPlaybackAllowed('nexstream')) {
+      return res
+        .status(403)
+        .send(
+          playerErrorHtml(
+            'NexStream is not authorized for commercial embedding on this site. Mark it Verified in Content Compliance only after you have licensing evidence.'
+          )
+        );
+    }
+
     if (Number(assoc.tmdbId) !== tmdbId) {
       return res.status(403).send(playerErrorHtml('Stream association mismatch.'));
     }
@@ -601,6 +645,22 @@ app.get('/api/vidsrc/player/:tmdbId', (req: Request, res: Response) => {
     const assoc = db.getStreamAssociation(tmdbId, 'vidsrc');
     if (!assoc || assoc.streamStatus !== 'available' || assoc.disabled) {
       return res.status(404).send(playerErrorHtml('Streaming currently unavailable for this title.'));
+    }
+
+    if (db.isTmdbDisputed(tmdbId)) {
+      return res
+        .status(451)
+        .send(playerErrorHtml('Playback disabled due to a copyright complaint under review.'));
+    }
+
+    if (!db.isProviderPlaybackAllowed('vidsrc')) {
+      return res
+        .status(403)
+        .send(
+          playerErrorHtml(
+            'Vidsrc is not authorized for commercial embedding on this site. Mark it Verified in Content Compliance only after you have licensing evidence.'
+          )
+        );
     }
 
     if (Number(assoc.tmdbId) !== tmdbId) {
@@ -1650,6 +1710,178 @@ app.get('/api/admin/ads/analytics', requireAdmin, (_req: Request, res: Response)
     res.json({ success: true, analytics });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to calculate analytics', details: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// CONTENT COMPLIANCE + DMCA
+// ----------------------------------------------------
+
+app.get('/api/site/legal', (_req: Request, res: Response) => {
+  try {
+    const settings = db.getComplianceSettings();
+    res.json({
+      success: true,
+      siteName: settings.siteName,
+      legalEntityName: settings.legalEntityName,
+      contactEmail: settings.contactEmail,
+      dmcaEmail: settings.dmcaEmail,
+      requireVerifiedProvidersForPlayback: settings.requireVerifiedProvidersForPlayback
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to load site legal settings', details: err.message });
+  }
+});
+
+app.post('/api/dmca/complaints', (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    const complainantName = String(body.complainantName || '').trim();
+    const complainantEmail = String(body.complainantEmail || '').trim();
+    const copyrightedWork = String(body.copyrightedWork || '').trim();
+    const infringingUrl = String(body.infringingUrl || '').trim();
+    const description = String(body.description || '').trim();
+    const goodFaithAffirmation = Boolean(body.goodFaithAffirmation);
+    const accuracyAffirmation = Boolean(body.accuracyAffirmation);
+
+    if (!complainantName || !complainantEmail || !copyrightedWork || !infringingUrl || !description) {
+      return res.status(400).json({ error: 'All required DMCA fields must be provided.' });
+    }
+    if (!goodFaithAffirmation || !accuracyAffirmation) {
+      return res.status(400).json({
+        error: 'You must affirm good-faith belief and accuracy of the complaint under penalty of perjury.'
+      });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(complainantEmail)) {
+      return res.status(400).json({ error: 'A valid complainant email is required.' });
+    }
+
+    const tmdbIdRaw = body.tmdbId != null ? parseInt(String(body.tmdbId), 10) : undefined;
+    const tmdbId = Number.isFinite(tmdbIdRaw as number) ? (tmdbIdRaw as number) : undefined;
+    const movieId = body.movieId ? String(body.movieId).trim() : undefined;
+
+    const complaint = db.createCopyrightComplaint({
+      complainantName,
+      complainantEmail,
+      complainantOrganization: body.complainantOrganization
+        ? String(body.complainantOrganization).trim()
+        : undefined,
+      copyrightedWork,
+      infringingUrl,
+      tmdbId,
+      movieId,
+      description,
+      goodFaithAffirmation,
+      accuracyAffirmation
+    });
+
+    // Soft-hold: immediately disable named titles pending admin review
+    if (tmdbId || movieId) {
+      db.disableDisputedContent({
+        tmdbIds: tmdbId ? [tmdbId] : [],
+        movieIds: movieId ? [movieId] : []
+      });
+      db.updateCopyrightComplaint(complaint.id, {
+        status: 'content_disabled',
+        disabledTmdbIds: tmdbId ? [tmdbId] : [],
+        disabledMovieIds: movieId ? [movieId] : [],
+        adminNotes: 'Auto-disabled named title(s) pending human review.'
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      complaintId: complaint.id,
+      message:
+        'Complaint received. If a specific title was identified, playback has been disabled pending review.'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to submit complaint', details: err.message });
+  }
+});
+
+app.get('/api/admin/compliance/providers', requireAdmin, (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      settings: db.getComplianceSettings(),
+      providers: db.getContentProviders()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to load compliance providers', details: err.message });
+  }
+});
+
+app.put('/api/admin/compliance/settings', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const updated = db.updateComplianceSettings(req.body || {});
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update compliance settings', details: err.message });
+  }
+});
+
+app.put('/api/admin/compliance/providers/:providerKey', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const providerKey = String(req.params.providerKey || '');
+    const updated = db.updateContentProvider(providerKey, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'Provider not found' });
+    res.json({ success: true, provider: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update provider' });
+  }
+});
+
+app.get('/api/admin/compliance/complaints', requireAdmin, (_req: Request, res: Response) => {
+  try {
+    res.json({ success: true, complaints: db.getCopyrightComplaints() });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to load complaints', details: err.message });
+  }
+});
+
+app.put('/api/admin/compliance/complaints/:id', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id);
+    const body = req.body || {};
+    const existing = db.getCopyrightComplaint(id);
+    if (!existing) return res.status(404).json({ error: 'Complaint not found' });
+
+    if (body.disableContent) {
+      const tmdbIds = [
+        ...(Array.isArray(body.tmdbIds) ? body.tmdbIds.map((n: any) => parseInt(String(n), 10)).filter(Number.isFinite) : []),
+        ...(existing.tmdbId ? [existing.tmdbId] : [])
+      ];
+      const movieIds = [
+        ...(Array.isArray(body.movieIds) ? body.movieIds.map(String) : []),
+        ...(existing.movieId ? [existing.movieId] : [])
+      ];
+      const result = db.disableDisputedContent({ tmdbIds, movieIds });
+      const updated = db.updateCopyrightComplaint(id, {
+        status: 'content_disabled',
+        adminNotes: String(body.adminNotes || existing.adminNotes || ''),
+        disabledTmdbIds: Array.from(new Set([...existing.disabledTmdbIds, ...tmdbIds])),
+        disabledMovieIds: Array.from(new Set([...existing.disabledMovieIds, ...movieIds]))
+      });
+      return res.json({ success: true, complaint: updated, ...result });
+    }
+
+    if (body.restoreContent) {
+      for (const tmdbId of existing.disabledTmdbIds || []) {
+        db.setTmdbDisputed(tmdbId, false);
+      }
+      for (const movieId of existing.disabledMovieIds || []) {
+        db.setMovieDisputed(movieId, false);
+      }
+    }
+
+    const updated = db.updateCopyrightComplaint(id, {
+      status: body.status,
+      adminNotes: body.adminNotes != null ? String(body.adminNotes) : undefined
+    });
+    res.json({ success: true, complaint: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update complaint', details: err.message });
   }
 });
 

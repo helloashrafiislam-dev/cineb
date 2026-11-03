@@ -51,40 +51,39 @@ export const InFeedAdCard: React.FC<InFeedAdCardProps> = ({ slot }) => {
     <div
       ref={cardRef}
       onClick={handleClick}
-      className="relative shrink-0 w-40 sm:w-48 md:w-56 aspect-[2/3] rounded-xl overflow-hidden bg-neutral-900 border border-amber-500/40 shadow-lg hover:shadow-2xl hover:border-amber-400 transition-all duration-300 transform hover:-translate-y-2 cursor-pointer group flex flex-col justify-between"
+      role="complementary"
+      aria-label="Advertisement"
+      className="relative shrink-0 w-40 sm:w-48 md:w-56 min-h-[14rem] rounded-xl overflow-hidden bg-neutral-950 border-2 border-dashed border-amber-500/50 shadow-md hover:border-amber-400 transition-colors cursor-pointer group flex flex-col"
     >
-      <img
-        src={imageSrc}
-        alt={slot.titleText || 'Sponsored'}
-        className="absolute inset-0 w-full h-full object-cover filter brightness-75 group-hover:scale-105 transition-transform duration-500"
-      />
-      <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-neutral-950/60" />
-
-      {/* Top Badge */}
-      <div className="relative z-10 p-2.5 flex items-center justify-between">
-        <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500 text-black font-extrabold flex items-center gap-1 shadow-md">
-          <Sparkles className="w-2.5 h-2.5 fill-black" />
-          <span>Sponsored</span>
+      <div className="px-2.5 py-1.5 bg-amber-500 text-black text-[10px] font-extrabold uppercase tracking-wider flex items-center justify-between gap-1">
+        <span className="inline-flex items-center gap-1">
+          <ShieldCheck className="w-3 h-3" />
+          Advertisement
         </span>
-        <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/60 text-neutral-300 font-mono">
-          {slot.network}
-        </span>
+        <span className="font-mono opacity-80">{slot.network}</span>
       </div>
 
-      {/* Bottom Content */}
-      <div className="relative z-10 p-3 space-y-2">
-        <span className="text-[10px] uppercase font-bold text-amber-400 block tracking-wider">
-          Partner Spotlight
+      <div className="relative flex-1 min-h-[7rem]">
+        <img
+          src={imageSrc}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover filter brightness-70"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/50 to-transparent" />
+      </div>
+
+      <div className="relative z-10 p-3 space-y-2 border-t border-amber-500/20">
+        <span className="text-[10px] uppercase font-bold text-amber-400 block tracking-wider flex items-center gap-1">
+          <Sparkles className="w-3 h-3" />
+          Sponsored
         </span>
-        <h4 className="text-white text-xs sm:text-sm font-bold line-clamp-2 leading-snug group-hover:text-amber-300 transition-colors">
+        <h4 className="text-white text-xs sm:text-sm font-bold line-clamp-2 leading-snug">
           {slot.titleText || slot.name}
         </h4>
-        <div className="pt-1">
-          <span className="w-full inline-flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs transition-colors shadow">
-            <span>Learn More</span>
-            <ExternalLink className="w-3 h-3" />
-          </span>
-        </div>
+        <span className="w-full inline-flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg bg-neutral-800 border border-neutral-600 text-neutral-100 font-semibold text-xs">
+          <span>Learn More</span>
+          <ExternalLink className="w-3 h-3" />
+        </span>
       </div>
     </div>
   );

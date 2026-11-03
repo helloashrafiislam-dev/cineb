@@ -10,7 +10,8 @@ interface ProviderPlayerProps {
 }
 
 /**
- * Authorized provider embed player (NexStream or Vidsrc).
+ * Provider embed player (NexStream or Vidsrc) — only mounted when the API returns a playerPath.
+ * Server gates embeds behind Content Compliance (Verified providers / not disputed).
  * Loads a same-origin backend shell so provider secrets never ship in the React bundle.
  * Note: providers detect & block iframe sandbox — do not set sandbox on this frame.
  */
@@ -125,7 +126,7 @@ export const ProviderPlayer: React.FC<ProviderPlayerProps> = ({
         <div className="min-w-0">
           <p className="text-xs font-semibold text-white truncate">Watch · {title}</p>
           <p className="text-[10px] text-neutral-500">
-            Authorized {label} playback
+            External player · {label}
             <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-[9px] font-bold uppercase tracking-wide text-neutral-300">
               {label}
             </span>

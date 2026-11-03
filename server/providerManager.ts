@@ -136,7 +136,12 @@ function isFresh(assoc: StreamAssociation, force: boolean): boolean {
 }
 
 function isPlayable(assoc?: StreamAssociation | null): boolean {
-  return Boolean(assoc && assoc.streamStatus === 'available' && !assoc.disabled);
+  if (!assoc || assoc.streamStatus !== 'available' || assoc.disabled) return false;
+  if (db.isTmdbDisputed(assoc.tmdbId)) return false;
+  const key = normalizeProviderKey(assoc.providerName);
+  // Commercial embedding only when admin has marked the provider Verified (with evidence)
+  if (!db.isProviderPlaybackAllowed(key)) return false;
+  return true;
 }
 
 function toNormalized(assoc: StreamAssociation): NormalizedProviderResult {
@@ -690,34 +695,62 @@ export function publicStreamPayload(assoc: StreamAssociation | null | undefined)
   const all = tmdbId ? db.getStreamAssociationsByTmdbId(tmdbId) : [];
   // Always re-resolve active from DB so Vidsrc fallback wins when NexStream isn't playable
   const preferred = tmdbId ? db.getStreamAssociationByTmdbId(tmdbId) || null : null;
-  const active = isPlayable(preferred) ? preferred : null;
+  const disputed = tmdbId ? db.isTmdbDisputed(tmdbId) : false;
+  const active = !disputed && isPlayable(preferred) ? preferred : null;
   const key = active ? normalizeProviderKey(active.providerName) : null;
+  const compliance = db.getComplianceSettings();
+  const providerRecords = db.getContentProviders();
+
+  let complianceBlockReason: string | null = null;
+  if (disputed) {
+    complianceBlockReason =
+      'Playback is disabled while a copyright complaint for this title is under review.';
+  } else if (preferred && preferred.streamStatus === 'available' && !preferred.disabled) {
+    const prefKey = normalizeProviderKey(preferred.providerName);
+    if (!db.isProviderPlaybackAllowed(prefKey)) {
+      const rec = providerRecords.find(p => p.providerKey === prefKey);
+      complianceBlockReason =
+        rec?.authorizationStatus === 'disabled'
+          ? `${providerDisplayName(prefKey)} is disabled in Content Compliance.`
+          : `${providerDisplayName(prefKey)} is not marked Verified for commercial embedding. A public embed URL is not a license.`;
+    }
+  }
 
   return {
     hasStream: Boolean(active),
     hasNexStream: Boolean(
       active && normalizeProviderKey(active.providerName) === 'nexstream'
     ),
-    streamStatus: (active?.streamStatus || preferred?.streamStatus || assoc?.streamStatus || 'unavailable') as StreamStatus,
+    streamStatus: disputed
+      ? ('disabled' as StreamStatus)
+      : ((active?.streamStatus || preferred?.streamStatus || assoc?.streamStatus || 'unavailable') as StreamStatus),
     playerPath: playerPathForAssociation(active),
     matchedTitle: active?.matchedTitle || preferred?.matchedTitle || assoc?.matchedTitle || null,
     matchConfidence: (active?.matchConfidence || preferred?.matchConfidence || assoc?.matchConfidence || 'none') as MatchConfidence,
     lastCheckedAt: active?.lastCheckedAt || preferred?.lastCheckedAt || assoc?.lastCheckedAt,
     providerName: active ? providerDisplayName(active.providerName) : null,
     providerKey: key,
-    providers: all.map(p => ({
-      providerName: providerDisplayName(p.providerName),
-      providerKey: normalizeProviderKey(p.providerName),
-      streamStatus: p.streamStatus,
-      availabilityStatus: p.availabilityStatus || p.streamStatus,
-      matchConfidence: p.matchConfidence,
-      disabled: Boolean(p.disabled),
-      selectedByAdmin: Boolean(p.selectedByAdmin),
-      lastCheckedAt: p.lastCheckedAt,
-      lastError: p.lastError,
-      playerPath: playerPathForAssociation(isPlayable(p) ? p : null),
-      normalized: toNormalized(p)
-    }))
+    complianceBlockReason,
+    requireVerifiedProviders: compliance.requireVerifiedProvidersForPlayback,
+    providers: all.map(p => {
+      const pKey = normalizeProviderKey(p.providerName);
+      const auth = db.getContentProvider(pKey)?.authorizationStatus || 'unverified';
+      const playable = !disputed && isPlayable(p);
+      return {
+        providerName: providerDisplayName(p.providerName),
+        providerKey: pKey,
+        streamStatus: p.streamStatus,
+        availabilityStatus: p.availabilityStatus || p.streamStatus,
+        matchConfidence: p.matchConfidence,
+        disabled: Boolean(p.disabled) || disputed || auth === 'disabled',
+        authorizationStatus: auth,
+        selectedByAdmin: Boolean(p.selectedByAdmin),
+        lastCheckedAt: p.lastCheckedAt,
+        lastError: p.lastError,
+        playerPath: playerPathForAssociation(playable ? p : null),
+        normalized: toNormalized(p)
+      };
+    })
   };
 }
 

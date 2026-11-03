@@ -21,6 +21,7 @@ import Hls from 'hls.js';
 import { Movie, AdSlot, AdSettings } from '../types.ts';
 import { api } from '../services/api.ts';
 import { BottomAdsRow } from './Ads/BottomAdsRow.tsx';
+import { LegalMiniFooter } from './Legal/LegalMiniFooter.tsx';
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -294,12 +295,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       {/* Main Container with Optional Player Sidebars — no top-of-page ads */}
       <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-4 space-y-4">
         {/* Video Player + Sidebars Layout */}
-        <div className="flex items-start justify-center gap-4">
-          {/* 2. Left Sidebar Beside Player (Requirement 1.D) */}
+        <div className="flex items-start justify-center gap-8 xl:gap-10">
+          {/* Left sidebar — extra gutter from player to reduce accidental clicks */}
           {showAds && playerLeftAd && (
-            <div className="hidden xl:flex flex-col items-center w-[160px] shrink-0 sticky top-20">
+            <div className="hidden xl:flex flex-col items-center w-[160px] shrink-0 sticky top-20 pt-10">
               <span className="text-[9px] uppercase font-bold text-neutral-500 mb-1">
-                {playerLeftAd.badgeLabel}
+                {playerLeftAd.badgeLabel || 'Advertisement'}
               </span>
               <div
                 onClick={() => {
@@ -475,11 +476,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* 3. Right Sidebar Beside Player (Requirement 1.D) */}
           {showAds && playerRightAd && (
-            <div className="hidden xl:flex flex-col items-center w-[160px] shrink-0 sticky top-20">
+            <div className="hidden xl:flex flex-col items-center w-[160px] shrink-0 sticky top-20 pt-10">
               <span className="text-[9px] uppercase font-bold text-neutral-500 mb-1">
-                {playerRightAd.badgeLabel}
+                {playerRightAd.badgeLabel || 'Advertisement'}
               </span>
               <div
                 onClick={() => {
@@ -510,6 +510,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             />
           </div>
         )}
+
+        <LegalMiniFooter />
       </div>
     </div>
   );

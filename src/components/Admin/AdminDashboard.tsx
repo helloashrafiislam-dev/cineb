@@ -28,6 +28,7 @@ import { AdManagementTab } from './Ads/AdManagementTab.tsx';
 import { AdAnalyticsTab } from './Ads/AdAnalyticsTab.tsx';
 import { StreamingManagementTab } from './StreamingManagementTab.tsx';
 import { TmdbMoviesListPanel } from './TmdbMoviesListPanel.tsx';
+import { ContentComplianceTab } from './ContentComplianceTab.tsx';
 
 interface AdminDashboardProps {
   adminUser: AdminUser;
@@ -44,7 +45,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onPlayMovie,
   onMoviesUpdated
 }) => {
-  const [activeTab, setActiveTab] = useState<'movies' | 'streaming' | 'ads' | 'analytics'>('movies');
+  const [activeTab, setActiveTab] = useState<
+    'movies' | 'streaming' | 'ads' | 'analytics' | 'compliance'
+  >('movies');
   const [movieCatalogView, setMovieCatalogView] = useState<'local' | 'tmdb'>('tmdb');
   const [movies, setMovies] = useState<Movie[]>([]);
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -251,7 +254,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-8 pt-6 space-y-6">
         {/* Navigation Tabs (Movies, Ad Management, Analytics) */}
-        <div className="flex items-center gap-2 p-1.5 bg-neutral-900/80 rounded-2xl border border-neutral-800/90 w-fit">
+        <div className="flex flex-wrap items-center gap-2 p-1.5 bg-neutral-900/80 rounded-2xl border border-neutral-800/90 w-fit max-w-full">
           <button
             onClick={() => setActiveTab('movies')}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
@@ -292,6 +295,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
               Live slots
             </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('compliance')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              activeTab === 'compliance'
+                ? 'bg-red-600 text-white shadow-lg shadow-red-950'
+                : 'text-neutral-400 hover:text-white hover:bg-neutral-800/50'
+            }`}
+          >
+            <Shield className="w-4 h-4" />
+            <span>Content Compliance</span>
           </button>
 
           <button
@@ -684,6 +699,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {activeTab === 'ads' && (
           <AdManagementTab onAdDataChanged={onMoviesUpdated} />
         )}
+
+        {activeTab === 'compliance' && <ContentComplianceTab />}
 
         {/* TAB 3: REVENUE & PERFORMANCE ANALYTICS */}
         {activeTab === 'analytics' && (

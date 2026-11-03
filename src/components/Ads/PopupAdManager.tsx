@@ -107,7 +107,7 @@ export const PopupAdManager: React.FC<PopupAdManagerProps> = ({ slots, settings 
         <div className="flex items-center justify-between text-[10px] text-neutral-500 pt-1 border-t border-neutral-800">
           <span className="flex items-center gap-1">
             <ShieldCheck className="w-3 h-3 text-neutral-500" />
-            <span>Policy Compliant (Capped: {settings.popupFrequencyMinutes}m)</span>
+            <span>Sponsored · dismiss anytime (cap {settings.popupFrequencyMinutes}m)</span>
           </span>
           <span className="font-mono uppercase">{popupSlot.network}</span>
         </div>

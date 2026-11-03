@@ -55,11 +55,67 @@ export interface ProviderStreamSummary {
   availabilityStatus?: StreamStatus;
   matchConfidence: MatchConfidence;
   disabled?: boolean;
+  authorizationStatus?: ProviderAuthStatus;
   selectedByAdmin?: boolean;
   lastCheckedAt?: string;
   lastError?: string;
   playerPath?: string | null;
 }
+
+export type ContentProviderKey = 'nexstream' | 'vidsrc' | 'owner_direct';
+
+export interface ContentProviderRecord {
+  id: string;
+  providerKey: ContentProviderKey;
+  displayName: string;
+  sourceUrl: string;
+  authorizationStatus: ProviderAuthStatus;
+  authorizationEvidence: string;
+  restrictions: string;
+  notes: string;
+  lastReviewedAt?: string;
+  reviewedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ComplaintStatus =
+  | 'received'
+  | 'under_review'
+  | 'content_disabled'
+  | 'rejected'
+  | 'resolved';
+
+export interface CopyrightComplaint {
+  id: string;
+  complainantName: string;
+  complainantEmail: string;
+  complainantOrganization?: string;
+  copyrightedWork: string;
+  infringingUrl: string;
+  tmdbId?: number;
+  movieId?: string;
+  description: string;
+  goodFaithAffirmation: boolean;
+  accuracyAffirmation: boolean;
+  status: ComplaintStatus;
+  adminNotes: string;
+  disabledTmdbIds: number[];
+  disabledMovieIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+}
+
+export interface SiteComplianceSettings {
+  contactEmail: string;
+  dmcaEmail: string;
+  legalEntityName: string;
+  siteName: string;
+  requireVerifiedProvidersForPlayback: boolean;
+}
+
+export type ProviderAuthStatus = 'verified' | 'unverified' | 'disabled';
 
 export interface NexStreamPublicInfo {
   hasStream?: boolean;
@@ -71,6 +127,8 @@ export interface NexStreamPublicInfo {
   lastCheckedAt?: string;
   providerName?: string | null;
   providerKey?: StreamingProviderKey | null;
+  complianceBlockReason?: string | null;
+  requireVerifiedProviders?: boolean;
   providers?: ProviderStreamSummary[];
 }
 
@@ -289,9 +347,12 @@ export interface AdSettings {
   popupNetwork: AdNetwork;
   popupCode: string;
   popupTargetUrl: string;
-  /** Sometimes first movie-card click opens ad; next click goes to details */
+  /**
+   * @deprecated High AdSense invalid-traffic risk — keep false.
+   * Intercepting navigation clicks to open ads is deceptive.
+   */
   cardClickAdEnabled: boolean;
-  /** Probability (0–100) that a first click opens an ad tab */
+  /** Probability (0–100); keep 0 for AdSense compliance */
   cardClickAdChancePercent: number;
   homeAdsEnabled: boolean;
   detailsAdsEnabled: boolean;
