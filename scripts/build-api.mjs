@@ -5,9 +5,10 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const outFile = path.join(root, 'api', 'index.js');
+const outDir = path.join(root, 'dist-api');
+const outFile = path.join(outDir, 'handler.cjs');
 
-fs.mkdirSync(path.dirname(outFile), { recursive: true });
+fs.mkdirSync(outDir, { recursive: true });
 
 await esbuild.build({
   entryPoints: [path.join(root, 'scripts', 'vercel-api-entry.ts')],
