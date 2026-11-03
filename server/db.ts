@@ -242,7 +242,11 @@ export interface DatabaseSchema {
   streamingSyncMeta: StreamingSyncMeta;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+/** Bundled seed (read-only on Vercel); writable copy lives under /tmp when serverless. */
+const SEED_DIR = path.resolve(process.cwd(), 'data');
+const SEED_DB_FILE = path.join(SEED_DIR, 'movies_database.json');
+const DATA_DIR = IS_SERVERLESS ? path.join('/tmp', 'cinestream-data') : SEED_DIR;
 const DB_FILE = path.join(DATA_DIR, 'movies_database.json');
 
 function hashPassword(password: string, salt: string): string {
@@ -729,6 +733,14 @@ class Database {
   private ensureDataDirectory(): void {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    // Cold start on Vercel: seed /tmp from the deployed data/ file when present.
+    if (IS_SERVERLESS && !fs.existsSync(DB_FILE) && fs.existsSync(SEED_DB_FILE)) {
+      try {
+        fs.copyFileSync(SEED_DB_FILE, DB_FILE);
+      } catch (err) {
+        console.warn('Could not seed serverless DB from data/:', err);
+      }
     }
   }
 

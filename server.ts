@@ -1772,6 +1772,9 @@ Return ONLY a valid JSON object without any markdown fences, backticks, or extra
 // ----------------------------------------------------
 // DEV & PRODUCTION SERVER INTEGRATION
 // ----------------------------------------------------
+// On Vercel, the Express `app` is exported as a serverless handler
+// (see scripts/vercel-api-entry.ts → api/index.js). Do not listen() there.
+export { app };
 
 async function startServer() {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -1799,7 +1802,16 @@ async function startServer() {
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+const isServerless = Boolean(
+  process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    // Injected at build time by scripts/build-api.mjs for the Vercel bundle
+    process.env.__CINESTREAM_SERVERLESS__
+);
+
+if (!isServerless) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

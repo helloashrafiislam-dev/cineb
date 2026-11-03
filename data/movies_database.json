@@ -124,9 +124,9 @@
       "targetDevice": "desktop",
       "cpmRate": 1.95,
       "cpcRate": 0.38,
-      "impressions": 2,
+      "impressions": 3,
       "clicks": 1,
-      "estimatedEarnings": 0.38,
+      "estimatedEarnings": 0.39,
       "createdAt": "2026-01-10T08:00:00.000Z",
       "updatedAt": "2026-02-01T12:00:00.000Z"
     },
@@ -146,7 +146,7 @@
       "targetDevice": "desktop",
       "cpmRate": 3.1,
       "cpcRate": 0.65,
-      "impressions": 0,
+      "impressions": 1,
       "clicks": 0,
       "estimatedEarnings": 0,
       "createdAt": "2026-01-10T08:00:00.000Z",
@@ -168,7 +168,7 @@
       "targetDevice": "all",
       "cpmRate": 2.8,
       "cpcRate": 0.55,
-      "impressions": 0,
+      "impressions": 1,
       "clicks": 0,
       "estimatedEarnings": 0,
       "createdAt": "2026-01-12T10:00:00.000Z",
@@ -409,9 +409,9 @@
       "targetDevice": "all",
       "cpmRate": 5.5,
       "cpcRate": 1.1,
-      "impressions": 0,
+      "impressions": 1,
       "clicks": 0,
-      "estimatedEarnings": 0,
+      "estimatedEarnings": 0.01,
       "createdAt": "2026-01-10T08:00:00.000Z",
       "updatedAt": "2026-02-01T12:00:00.000Z"
     }
@@ -461,6 +461,46 @@
       "device": "desktop",
       "earnings": 0.38,
       "timestamp": "2026-11-03T19:08:25.795Z"
+    },
+    {
+      "id": "ev-1793733351761-1uee",
+      "adSlotId": "ad-sidebar-left",
+      "position": "desktop_left_sidebar",
+      "network": "adsense",
+      "type": "impression",
+      "device": "desktop",
+      "earnings": 0.00195,
+      "timestamp": "2026-11-03T19:15:51.761Z"
+    },
+    {
+      "id": "ev-1793733351779-0qnn",
+      "adSlotId": "ad-sidebar-right",
+      "position": "desktop_right_sidebar",
+      "network": "monetag",
+      "type": "impression",
+      "device": "desktop",
+      "earnings": 0.0031,
+      "timestamp": "2026-11-03T19:15:51.779Z"
+    },
+    {
+      "id": "ev-1793733352002-5u1i",
+      "adSlotId": "ad-home-between-sections",
+      "position": "home_between_sections",
+      "network": "adsterra",
+      "type": "impression",
+      "device": "desktop",
+      "earnings": 0.0028,
+      "timestamp": "2026-11-03T19:15:52.002Z"
+    },
+    {
+      "id": "ev-1793733363828-pvg8",
+      "adSlotId": "ad-popup-under",
+      "position": "popup_under",
+      "network": "monetag",
+      "type": "impression",
+      "device": "desktop",
+      "earnings": 0.0055,
+      "timestamp": "2026-11-03T19:16:03.828Z"
     }
   ],
   "streamAssociations": [],
