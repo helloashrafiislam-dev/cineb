@@ -24,9 +24,9 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   if (!isOpen) return null;
 
   const genres = ['All', 'Action', 'Drama', 'Sci-Fi', 'Thriller', 'Comedy', 'Animation', 'Crime', 'Adventure'];
-  const languages = ['All', 'Hindi + Telugu', 'Hindi', 'English', 'Tamil + Telugu', 'Telugu', 'Tamil', 'Bengali', 'Hindi + Bengali'];
+  const languages = ['All', 'English', 'Hindi', 'Japanese', 'Korean', 'French', 'Spanish', 'Bengali'];
   const qualities = ['All', '4K', '1080p', '720p', '480p'];
-  const years = ['All', '2026', '2025', '2024', '2023'];
+  const years = ['All', '2026', '2025', '2024', '2023', '2022', '2021', '2020'];
 
   const hasActiveFilters =
     filters.genre !== 'All' ||

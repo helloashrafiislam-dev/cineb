@@ -50,25 +50,25 @@ export const AdSlotModal: React.FC<AdSlotModalProps> = ({
 
   const positionOptions: Array<{ id: AdPosition; label: string; group: string }> = [
     // Homepage
-    { id: 'home_header', label: 'Top Header Banner (728x90)', group: 'Homepage' },
-    { id: 'home_below_nav', label: 'Below Navigation Ribbon (970x90)', group: 'Homepage' },
+    { id: 'home_header', label: 'Top Header (disabled in UI — no top ads)', group: 'Homepage' },
+    { id: 'home_below_nav', label: 'Below Navigation (disabled in UI — no top ads)', group: 'Homepage' },
     { id: 'home_between_sections', label: 'Between Movie Sections (970x250)', group: 'Homepage' },
     { id: 'home_between_cards', label: 'Between Movie Cards (In-Feed Native)', group: 'Homepage' },
-    { id: 'home_footer', label: 'Footer Banner (728x90)', group: 'Homepage' },
+    { id: 'home_footer', label: 'Footer Large Ad (side-by-side bottom)', group: 'Homepage' },
     // Sidebars
     { id: 'desktop_left_sidebar', label: 'Left Desktop Skyscraper (160x600)', group: 'Sidebars (Desktop)' },
     { id: 'desktop_right_sidebar', label: 'Right Desktop Half-Page (300x600)', group: 'Sidebars (Desktop)' },
     // Movie Details Page
-    { id: 'movie_details_top', label: 'Above Movie Info Banner (728x90)', group: 'Movie Details Page' },
+    { id: 'movie_details_top', label: 'Details Top (disabled in UI — no top ads)', group: 'Movie Details Page' },
     { id: 'movie_details_below_poster', label: 'Below Movie Poster (300x250)', group: 'Movie Details Page' },
     { id: 'movie_details_mid', label: 'Between Description & Specs (Responsive)', group: 'Movie Details Page' },
     { id: 'movie_details_before_watch', label: 'Before Watch Now Button (468x60)', group: 'Movie Details Page' },
-    { id: 'movie_details_below_related', label: 'Below Related Movies (728x90)', group: 'Movie Details Page' },
+    { id: 'movie_details_below_related', label: 'Below Related (large side-by-side bottom)', group: 'Movie Details Page' },
     // Player Page
-    { id: 'player_above', label: 'Banner Above Video Player (728x90)', group: 'Video Player Page' },
+    { id: 'player_above', label: 'Above Player (disabled in UI — no top ads)', group: 'Video Player Page' },
     { id: 'player_sidebar_left', label: 'Left Sidebar Beside Player (160x600)', group: 'Video Player Page' },
     { id: 'player_sidebar_right', label: 'Right Sidebar Beside Player (160x600)', group: 'Video Player Page' },
-    { id: 'player_below', label: 'Banner Below Video Player (970x250)', group: 'Video Player Page' },
+    { id: 'player_below', label: 'Below Video Player (large side-by-side)', group: 'Video Player Page' },
     // Popup
     { id: 'popup_under', label: 'Compliant New Tab Popunder', group: 'Popup & New Tab' }
   ];

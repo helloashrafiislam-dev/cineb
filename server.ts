@@ -1,12 +1,54 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import { db, Movie, AdSlot, AdPosition, AdNetwork, AdDevice } from './server/db.ts';
+import {
+  tmdb,
+  TmdbMovieSummary,
+  TmdbTvSummary,
+  TMDB_CATALOG_SECTIONS,
+  TmdbCatalogSection
+} from './server/tmdb.ts';
+import { nexstream } from './server/nexstream.ts';
+import { vidsrc } from './server/vidsrc.ts';
+import { normalizeProviderKey, providerDisplayName, StreamingProviderKey } from './server/db.ts';
+import {
+  ensureStreamAssociationCached,
+  publicStreamPayload,
+  syncStreamAssociations,
+  resolveProvidersForMovie
+} from './server/streamMatching.ts';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'cinestream-secure-token-secret-key-2026';
+
+function hasPlayableStream(tmdbId?: number, local?: Movie | null): boolean {
+  if (local?.streamingUrl && String(local.streamingUrl).trim()) return true;
+  if (!tmdbId) return false;
+  const assoc = db.getStreamAssociationByTmdbId(tmdbId);
+  return Boolean(assoc && assoc.streamStatus === 'available' && !assoc.disabled);
+}
+
+function attachLocalPlaybackFlags<T extends { tmdbId: number }>(items: T[]) {
+  return items.map(item => {
+    const local = db.getMovieByTmdbId(item.tmdbId);
+    const stream = publicStreamPayload(db.getStreamAssociationByTmdbId(item.tmdbId));
+    return {
+      ...item,
+      localMovieId: local?.id,
+      hasPlayback: hasPlayableStream(item.tmdbId, local),
+      nexStream: stream,
+      stream: stream
+    };
+  });
+}
+
+function mapListResults(results: Array<TmdbMovieSummary | TmdbTvSummary>) {
+  return attachLocalPlaybackFlags(results.map(r => tmdb.enrichSummary(r)));
+}
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -137,8 +179,8 @@ app.get('/api/featured', (req: Request, res: Response) => {
   }
 });
 
-// Single movie details & related
-app.get('/api/movies/:id', (req: Request, res: Response) => {
+// Single movie details & related (+ optional TMDB enrichment)
+app.get('/api/movies/:id', async (req: Request, res: Response) => {
   try {
     const movie = db.getMovieById(req.params.id);
     if (!movie) {
@@ -152,7 +194,28 @@ app.get('/api/movies/:id', (req: Request, res: Response) => {
       m.genre.some(g => movie.genre.includes(g))
     ).slice(0, 6);
 
-    res.json({ success: true, movie, related });
+    let tmdbExtras: Record<string, unknown> | null = null;
+    if (movie.tmdbId && tmdb.isConfigured()) {
+      try {
+        const details = await tmdb.getMovieDetails(movie.tmdbId);
+        const mapped = tmdb.mapToMovieMetadata(details);
+        tmdbExtras = {
+          cast: mapped.cast,
+          crew: mapped.crew,
+          productionCompanies: mapped.productionCompanies,
+          trailerUrl: movie.trailerUrl || mapped.trailerUrl,
+          trailerKey: mapped.trailerKey,
+          similarTmdb: mapListResults(mapped.similar),
+          recommendationsTmdb: mapListResults(mapped.recommendations),
+          runtime: movie.runtime || mapped.runtime,
+          originalTitle: movie.originalTitle || mapped.originalTitle
+        };
+      } catch (enrichErr) {
+        console.warn('TMDB enrich failed for local movie', movie.id, enrichErr);
+      }
+    }
+
+    res.json({ success: true, movie, related, tmdbExtras });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to load movie details', details: err.message });
   }
@@ -165,6 +228,513 @@ app.post('/api/movies/:id/view', (req: Request, res: Response) => {
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Failed to update views' });
+  }
+});
+
+// ----------------------------------------------------
+// TMDB PUBLIC DISCOVERY (credentials stay on server)
+// ----------------------------------------------------
+
+app.get('/api/tmdb/status', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    configured: tmdb.isConfigured(),
+    imageBaseUrl: tmdb.getImageBaseUrl(),
+    attributionRequired: true
+  });
+});
+
+app.get('/api/tmdb/discover', async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+
+    // Industry / language sections load in parallel; one failure must not blank the whole home page
+    const settled = await Promise.allSettled([
+      tmdb.getTrending(page),
+      tmdb.getHollywood(page),
+      tmdb.getBollywood(page),
+      tmdb.getSouthIndian(page),
+      tmdb.getBengali(page),
+      tmdb.getTopRated(page),
+      tmdb.getUpcoming(page),
+      tmdb.getPopular(page),
+      tmdb.getNowPlaying(page),
+      tmdb.getPopularTv(page)
+    ]);
+
+    const empty = { results: [] as TmdbMovieSummary[], page, total_pages: 0, total_results: 0 };
+    const pick = (i: number) =>
+      settled[i].status === 'fulfilled' ? settled[i].value : empty;
+
+    const trending = pick(0);
+    const hollywood = pick(1);
+    const bollywood = pick(2);
+    const southIndian = pick(3);
+    const bengali = pick(4);
+    const topRated = pick(5);
+    const upcoming = pick(6);
+    const popular = pick(7);
+    const nowPlaying = pick(8);
+    const popularTv = pick(9);
+
+    const sectionErrors: Record<string, string> = {};
+    const keys = [
+      'trending',
+      'hollywood',
+      'bollywood',
+      'southIndian',
+      'bengali',
+      'topRated',
+      'upcoming',
+      'popular',
+      'nowPlaying',
+      'popularTv'
+    ];
+    settled.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        sectionErrors[keys[i]] =
+          result.reason instanceof Error ? result.reason.message : 'Failed to load section';
+      }
+    });
+
+    const take = (rows: TmdbMovieSummary[] | TmdbTvSummary[], n = 20) =>
+      mapListResults((rows || []).slice(0, n));
+
+    res.json({
+      success: true,
+      page,
+      trending: take(trending.results),
+      hollywood: take(hollywood.results),
+      bollywood: take(bollywood.results),
+      southIndian: take(southIndian.results),
+      bengali: take(bengali.results),
+      topRated: take(topRated.results),
+      upcoming: take(upcoming.results),
+      // Preserve legacy worldwide popular / now-playing / TV for existing tabs
+      popular: take(popular.results),
+      nowPlaying: take(nowPlaying.results),
+      popularTv: take(popularTv.results),
+      pages: {
+        trending: trending.total_pages,
+        hollywood: hollywood.total_pages,
+        bollywood: bollywood.total_pages,
+        southIndian: southIndian.total_pages,
+        bengali: bengali.total_pages,
+        topRated: topRated.total_pages,
+        upcoming: upcoming.total_pages,
+        popular: popular.total_pages,
+        nowPlaying: nowPlaying.total_pages,
+        popularTv: popularTv.total_pages
+      },
+      sectionErrors
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load TMDB discovery' });
+  }
+});
+
+/** Paginated catalog section — e.g. /api/tmdb/section/bollywood?page=2 */
+app.get('/api/tmdb/section/:section', async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const section = req.params.section as TmdbCatalogSection;
+    if (!TMDB_CATALOG_SECTIONS[section]) {
+      return res.status(404).json({
+        error: 'Unknown catalog section',
+        available: Object.keys(TMDB_CATALOG_SECTIONS)
+      });
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const data = await tmdb.getCatalogSection(section, page);
+    const meta = TMDB_CATALOG_SECTIONS[section];
+
+    res.json({
+      success: true,
+      section,
+      label: meta.label,
+      languages: meta.languages || null,
+      page: data.page,
+      totalPages: data.total_pages,
+      totalResults: data.total_results,
+      results: mapListResults(data.results)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load TMDB section' });
+  }
+});
+
+app.get('/api/tmdb/movie/:tmdbId', async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB movie id' });
+    }
+
+    const details = await tmdb.getMovieDetails(tmdbId);
+    const mapped = tmdb.mapToMovieMetadata(details);
+    const localMovie = db.getMovieByTmdbId(tmdbId) || null;
+
+    // Cache-first multi-provider association — never block details on live provider search
+    const matchInput = {
+      tmdbId,
+      title: mapped.title,
+      originalTitle: mapped.originalTitle,
+      releaseYear: mapped.releaseYear,
+      originalLanguage: mapped.originalLanguage,
+      imdbId: mapped.imdbId,
+      movieId: localMovie?.id,
+      mediaType: 'movie' as const
+    };
+    const cachedAssoc = ensureStreamAssociationCached(matchInput);
+    const stream = publicStreamPayload(cachedAssoc);
+
+    res.json({
+      success: true,
+      details: {
+        ...mapped,
+        similar: mapListResults(mapped.similar),
+        recommendations: mapListResults(mapped.recommendations),
+        localMovie,
+        hasPlayback: hasPlayableStream(tmdbId, localMovie),
+        nexStream: stream,
+        stream
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load TMDB movie details' });
+  }
+});
+
+// ----------------------------------------------------
+// PROVIDER PLAYBACK (API keys never sent to the browser bundle)
+// ----------------------------------------------------
+
+app.get('/api/nexstream/status', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    configured: nexstream.isConfigured(),
+    baseUrl: nexstream.isConfigured() ? nexstream.getBaseUrl() : null,
+    matchingMode: 'exact_tmdb_id',
+    note: 'NexStream resolves streams by TMDB id via /embed/movie/{tmdbId}. No title-search API is documented.'
+  });
+});
+
+app.get('/api/providers/status', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    priority: ['nexstream', 'vidsrc'],
+    nexstream: {
+      configured: nexstream.isConfigured(),
+      baseUrl: nexstream.isConfigured() ? nexstream.getBaseUrl() : null,
+      matchingMode: 'exact_tmdb_id'
+    },
+    vidsrc: {
+      configured: vidsrc.isConfigured(),
+      baseUrl: vidsrc.isConfigured() ? vidsrc.getBaseUrl() : null,
+      matchingMode: 'exact_imdb_id_preferred_else_tmdb_id',
+      note: 'Documented embeds: /embed/movie/{id}. Catalog feeds /vapi/movie/new|add are used when available.'
+    }
+  });
+});
+
+/**
+ * Same-origin player shell around NexStream / Vidsrc embeds.
+ * Providers detect & refuse iframe sandbox — never set sandbox on the embed frame.
+ * Soft anti-ad helpers stay in this shell only (click gate lives in ProviderPlayer).
+ */
+function sendProviderPlayerHtml(res: Response, title: string, embedUrl: string) {
+  let embedOrigin = '';
+  try {
+    embedOrigin = new URL(embedUrl).origin;
+  } catch {
+    embedOrigin = '';
+  }
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader(
+    'Permissions-Policy',
+    'fullscreen=(self), autoplay=(self), payment=(), interest-cohort=()'
+  );
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "script-src 'unsafe-inline'",
+      "style-src 'unsafe-inline'",
+      `frame-src ${embedOrigin || "'none'"}`,
+      "base-uri 'none'",
+      "form-action 'none'",
+      "object-src 'none'"
+    ].join('; ')
+  );
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)} · Stream</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+    iframe { border:0; width:100%; height:100%; display:block; background:#000; }
+  </style>
+</head>
+<body>
+  <iframe
+    id="provider-frame"
+    src="${escapeHtml(embedUrl)}"
+    title="${escapeHtml(title)}"
+    allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen *"
+    allowfullscreen
+    webkitallowfullscreen
+    mozallowfullscreen
+    referrerpolicy="no-referrer"
+    loading="eager"
+  ></iframe>
+  <script>
+(function () {
+  // Soften ad helpers that run in this shell (not inside cross-origin provider DOM).
+  try { window.open = function () { return null; }; } catch (_) {}
+  try {
+    Object.defineProperty(window, 'open', {
+      configurable: false,
+      writable: false,
+      value: function () { return null; }
+    });
+  } catch (_) {}
+
+  window.addEventListener('blur', function () {
+    setTimeout(function () {
+      try { window.focus(); } catch (_) {}
+    }, 0);
+  });
+
+  document.addEventListener('auxclick', function (e) {
+    if (e.button === 1) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
+  document.addEventListener('click', function (e) {
+    var el = e.target;
+    if (!el || !el.closest) return;
+    var link = el.closest('a[target="_blank"], a[target="_new"]');
+    if (link) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+})();
+  </script>
+</body>
+</html>`);
+}
+
+/** Same-origin NexStream player shell — injects provider embed URL server-side. */
+app.get('/api/nexstream/player/:tmdbId', (req: Request, res: Response) => {
+  try {
+    if (!nexstream.isConfigured()) {
+      return res.status(503).send(playerErrorHtml('NexStream is not configured.'));
+    }
+
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).send(playerErrorHtml('Invalid movie id.'));
+    }
+
+    const assoc =
+      db.getStreamAssociation(tmdbId, 'nexstream') ||
+      (() => {
+        const active = db.getStreamAssociationByTmdbId(tmdbId);
+        return active && normalizeProviderKey(active.providerName) === 'nexstream' ? active : null;
+      })();
+
+    if (!assoc || assoc.streamStatus !== 'available' || assoc.disabled) {
+      return res.status(404).send(playerErrorHtml('Streaming currently unavailable for this title.'));
+    }
+
+    if (Number(assoc.tmdbId) !== tmdbId) {
+      return res.status(403).send(playerErrorHtml('Stream association mismatch.'));
+    }
+
+    const embedUrl = nexstream.buildEmbedUrl(tmdbId, assoc.mediaType === 'tv' ? 'tv' : 'movie');
+    const title = assoc.matchedTitle || `TMDB ${tmdbId}`;
+    sendProviderPlayerHtml(res, title, embedUrl);
+  } catch (err: any) {
+    res.status(500).send(playerErrorHtml(err.message || 'Playback error'));
+  }
+});
+
+/** Same-origin Vidsrc player shell — uses documented public embed URL only. */
+app.get('/api/vidsrc/player/:tmdbId', (req: Request, res: Response) => {
+  try {
+    if (!vidsrc.isConfigured()) {
+      return res.status(503).send(playerErrorHtml('Vidsrc is disabled on this server.'));
+    }
+
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).send(playerErrorHtml('Invalid movie id.'));
+    }
+
+    const assoc = db.getStreamAssociation(tmdbId, 'vidsrc');
+    if (!assoc || assoc.streamStatus !== 'available' || assoc.disabled) {
+      return res.status(404).send(playerErrorHtml('Streaming currently unavailable for this title.'));
+    }
+
+    if (Number(assoc.tmdbId) !== tmdbId) {
+      return res.status(403).send(playerErrorHtml('Stream association mismatch.'));
+    }
+
+    const providerId = assoc.providerMovieId || String(tmdbId);
+    const embedUrl = vidsrc.buildEmbedUrl(providerId, assoc.mediaType === 'tv' ? 'tv' : 'movie');
+    const title = assoc.matchedTitle || `TMDB ${tmdbId}`;
+    sendProviderPlayerHtml(res, title, embedUrl);
+  } catch (err: any) {
+    res.status(500).send(playerErrorHtml(err.message || 'Playback error'));
+  }
+});
+
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function playerErrorHtml(message: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stream unavailable</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0a0a;color:#d4d4d4;font-family:system-ui,sans-serif;padding:24px;text-align:center}
+p{max-width:28rem;line-height:1.5;font-size:14px}</style></head>
+<body><p>${escapeHtml(message)}</p></body></html>`;
+}
+
+app.get('/api/tmdb/:list', async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const list = req.params.list;
+
+    // Support both legacy list names and new industry sections
+    const aliases: Record<string, TmdbCatalogSection> = {
+      trending: 'trending',
+      popular: 'popular',
+      'top-rated': 'top-rated',
+      'now-playing': 'now-playing',
+      upcoming: 'upcoming',
+      'tv-popular': 'tv-popular',
+      hollywood: 'hollywood',
+      bollywood: 'bollywood',
+      'south-indian': 'south-indian',
+      bengali: 'bengali'
+    };
+
+    const section = aliases[list];
+    if (!section) {
+      return res.status(404).json({ error: 'Unknown TMDB list' });
+    }
+
+    const data = await tmdb.getCatalogSection(section, page);
+
+    res.json({
+      success: true,
+      page: data.page,
+      totalPages: data.total_pages,
+      totalResults: data.total_results,
+      results: mapListResults(data.results)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load TMDB list' });
+  }
+});
+
+// Admin TMDB search (for import workflow)
+app.get('/api/admin/tmdb/search', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const q = String(req.query.q || '').trim();
+    if (!q) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const data = await tmdb.searchMovies(q, page);
+
+    res.json({
+      success: true,
+      page: data.page,
+      totalPages: data.total_pages,
+      totalResults: data.total_results,
+      results: attachLocalPlaybackFlags(
+        data.results.map(r => ({
+          ...tmdb.enrichSummary(r),
+          alreadyImported: Boolean(db.getMovieByTmdbId(r.id))
+        }))
+      )
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'TMDB search failed' });
+  }
+});
+
+app.get('/api/admin/tmdb/movie/:tmdbId', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB movie id' });
+    }
+
+    const details = await tmdb.getMovieDetails(tmdbId);
+    const mapped = tmdb.mapToMovieMetadata(details);
+    const existing = db.getMovieByTmdbId(tmdbId) || null;
+
+    res.json({
+      success: true,
+      metadata: mapped,
+      existingMovie: existing
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load TMDB movie for import' });
   }
 });
 
@@ -328,13 +898,86 @@ app.get('/api/admin/movies', requireAdmin, (_req: Request, res: Response) => {
   }
 });
 
-// Admin stats
+// Admin stats — local database only (no TMDB filler numbers)
 app.get('/api/admin/stats', requireAdmin, (_req: Request, res: Response) => {
   try {
     const stats = db.getStats();
     res.json({ success: true, stats });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to retrieve stats', details: err.message });
+  }
+});
+
+// Admin quick-import a TMDB movie into the local catalog (provider playback)
+app.post('/api/admin/movies/import-tmdb', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({
+        error: 'TMDB is not configured. Add TMDB_ACCESS_TOKEN or TMDB_API_KEY to your .env file.'
+      });
+    }
+
+    const tmdbId = parseInt(String(req.body?.tmdbId ?? ''), 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Valid tmdbId is required' });
+    }
+
+    const existing = db.getMovieByTmdbId(tmdbId);
+    if (existing) {
+      return res.status(409).json({
+        error: `"${existing.title}" is already in the catalog.`,
+        movie: existing
+      });
+    }
+
+    const details = await tmdb.getMovieDetails(tmdbId);
+    const m = tmdb.mapToMovieMetadata(details);
+    const fallbackPoster =
+      'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80';
+
+    const newMovie = db.createMovie({
+      title: m.title,
+      description: (m.overview || m.description || 'No description provided.').trim(),
+      releaseYear: m.releaseYear,
+      genre: m.genres?.length ? m.genres : ['Drama'],
+      category: m.category || m.genres?.[0] || 'Drama',
+      quality: '1080p',
+      language: (m.language || 'EN').toUpperCase(),
+      streamingUrl: '',
+      posterUrl: m.posterUrl || fallbackPoster,
+      backdropUrl: m.backdropUrl || undefined,
+      isFeatured: Boolean(req.body?.isFeatured),
+      isTrending: req.body?.isTrending !== undefined ? Boolean(req.body.isTrending) : true,
+      isPopular: req.body?.isPopular !== undefined ? Boolean(req.body.isPopular) : true,
+      isPublished: req.body?.isPublished !== undefined ? Boolean(req.body.isPublished) : true,
+      rating: m.rating || 0,
+      duration: m.duration || '2h 00m',
+      tmdbId: m.tmdbId,
+      originalTitle: m.originalTitle,
+      posterPath: m.posterPath,
+      backdropPath: m.backdropPath,
+      releaseDate: m.releaseDate || undefined,
+      runtime: m.runtime,
+      trailerUrl: m.trailerUrl,
+      manualPlaybackOverride: false
+    });
+
+    if (newMovie.tmdbId) {
+      void resolveProvidersForMovie({
+        tmdbId: newMovie.tmdbId,
+        title: newMovie.title,
+        originalTitle: newMovie.originalTitle,
+        releaseYear: newMovie.releaseYear,
+        movieId: newMovie.id,
+        mediaType: 'movie',
+        imdbId: m.imdbId
+      }).catch(() => undefined);
+    }
+
+    res.status(201).json({ success: true, movie: newMovie });
+  } catch (err: any) {
+    const status = String(err.message || '').includes('already exists') ? 409 : 500;
+    res.status(status).json({ error: err.message || 'Failed to import TMDB movie' });
   }
 });
 
@@ -357,7 +1000,14 @@ app.post('/api/admin/movies', requireAdmin, (req: Request, res: Response) => {
       isPopular,
       isPublished,
       rating,
-      duration
+      duration,
+      tmdbId,
+      originalTitle,
+      posterPath,
+      backdropPath,
+      releaseDate,
+      runtime,
+      trailerUrl
     } = req.body;
 
     // Validation
@@ -365,15 +1015,29 @@ app.post('/api/admin/movies', requireAdmin, (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Movie Title is required' });
     }
 
-    if (!streamingUrl || typeof streamingUrl !== 'string' || !streamingUrl.trim()) {
-      return res.status(400).json({ error: 'Movie Video Streaming URL is required' });
+    const parsedTmdbId = tmdbId !== undefined && tmdbId !== null && tmdbId !== ''
+      ? parseInt(String(tmdbId), 10)
+      : undefined;
+
+    const hasStreamUrl = typeof streamingUrl === 'string' && Boolean(streamingUrl.trim());
+    // Provider-backed titles (TMDB id) may be imported without a manual file URL.
+    if (!hasStreamUrl && !parsedTmdbId) {
+      return res.status(400).json({
+        error: 'Movie Video Streaming URL is required (or provide a TMDB id for provider playback)'
+      });
+    }
+
+    if (parsedTmdbId && db.getMovieByTmdbId(parsedTmdbId)) {
+      return res.status(409).json({
+        error: `A movie with TMDB id ${parsedTmdbId} already exists. Open it from the catalog to edit instead.`
+      });
     }
 
     const yearNum = parseInt(releaseYear, 10) || new Date().getFullYear();
     const genreArray = Array.isArray(genre)
       ? genre
       : typeof genre === 'string'
-      ? genre.split(',').map(g => g.trim()).filter(Boolean)
+      ? genre.split(',').map((g: string) => g.trim()).filter(Boolean)
       : ['Action'];
 
     const validQualities = ['480p', '720p', '1080p', '4K'];
@@ -389,7 +1053,7 @@ app.post('/api/admin/movies', requireAdmin, (req: Request, res: Response) => {
       category: (category || genreArray[0] || 'Action').trim(),
       quality: safeQuality,
       language: (language || 'English').trim(),
-      streamingUrl: streamingUrl.trim(),
+      streamingUrl: hasStreamUrl ? streamingUrl.trim() : '',
       posterUrl: (posterUrl && posterUrl.trim()) || fallbackPoster,
       backdropUrl: backdropUrl && backdropUrl.trim() ? backdropUrl.trim() : undefined,
       isFeatured: Boolean(isFeatured),
@@ -397,12 +1061,37 @@ app.post('/api/admin/movies', requireAdmin, (req: Request, res: Response) => {
       isPopular: Boolean(isPopular),
       isPublished: isPublished !== undefined ? Boolean(isPublished) : true,
       rating: Number(rating) || 8.0,
-      duration: (duration || '2h 10m').trim()
+      duration: (duration || '2h 10m').trim(),
+      tmdbId: Number.isFinite(parsedTmdbId as number) ? parsedTmdbId : undefined,
+      originalTitle: originalTitle ? String(originalTitle).trim() : undefined,
+      posterPath: posterPath ?? undefined,
+      backdropPath: backdropPath ?? undefined,
+      releaseDate: releaseDate ? String(releaseDate) : undefined,
+      runtime: runtime !== undefined && runtime !== null && runtime !== ''
+        ? Number(runtime)
+        : undefined,
+      trailerUrl: trailerUrl ? String(trailerUrl).trim() : undefined,
+      // Manual URL wins when provided; otherwise providers resolve playback via TMDB id.
+      manualPlaybackOverride: hasStreamUrl
     });
+
+    // Auto-match providers when a TMDB id is present (non-blocking for response).
+    // Manual streamingUrl override is preserved separately on the local movie.
+    if (newMovie.tmdbId) {
+      void resolveProvidersForMovie({
+        tmdbId: newMovie.tmdbId,
+        title: newMovie.title,
+        originalTitle: newMovie.originalTitle,
+        releaseYear: newMovie.releaseYear,
+        movieId: newMovie.id,
+        mediaType: 'movie'
+      }).catch(() => undefined);
+    }
 
     res.status(201).json({ success: true, movie: newMovie });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to create movie', details: err.message });
+    const status = String(err.message || '').includes('already exists') ? 409 : 500;
+    res.status(status).json({ error: err.message || 'Failed to create movie' });
   }
 });
 
@@ -410,7 +1099,8 @@ app.post('/api/admin/movies', requireAdmin, (req: Request, res: Response) => {
 app.put('/api/admin/movies/:id', requireAdmin, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+    const existing = db.getMovieById(id);
 
     if (updates.genre && typeof updates.genre === 'string') {
       updates.genre = updates.genre.split(',').map((g: string) => g.trim()).filter(Boolean);
@@ -421,6 +1111,19 @@ app.put('/api/admin/movies/:id', requireAdmin, (req: Request, res: Response) => 
     if (updates.rating) {
       updates.rating = Number(updates.rating);
     }
+    if (updates.tmdbId !== undefined && updates.tmdbId !== null && updates.tmdbId !== '') {
+      updates.tmdbId = parseInt(String(updates.tmdbId), 10);
+    }
+    if (updates.runtime !== undefined && updates.runtime !== null && updates.runtime !== '') {
+      updates.runtime = Number(updates.runtime);
+    }
+
+    // Direct link: non-empty → owner playback override; empty → clear and use providers
+    if (updates.streamingUrl !== undefined) {
+      const nextUrl = String(updates.streamingUrl || '').trim();
+      updates.streamingUrl = nextUrl;
+      updates.manualPlaybackOverride = Boolean(nextUrl);
+    }
 
     const updated = db.updateMovie(id, updates);
     if (!updated) {
@@ -429,7 +1132,363 @@ app.put('/api/admin/movies/:id', requireAdmin, (req: Request, res: Response) => 
 
     res.json({ success: true, movie: updated });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to update movie', details: err.message });
+    const status = String(err.message || '').includes('already linked') ? 409 : 500;
+    res.status(status).json({ error: err.message || 'Failed to update movie' });
+  }
+});
+
+// ----------------------------------------------------
+// ADMIN — Multi-Provider Streaming Management
+// ----------------------------------------------------
+
+app.get('/api/admin/streaming/stats', requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const associations = db.getAllStreamAssociations();
+    const moviesWithTmdb = db.getAllMovies(false).filter(m => m.tmdbId);
+    const trackedIds = new Set<number>();
+    for (const a of associations) trackedIds.add(a.tmdbId);
+    for (const m of moviesWithTmdb) {
+      if (m.tmdbId) trackedIds.add(m.tmdbId);
+    }
+
+    let tmdbCatalogSize = trackedIds.size;
+    let tmdbLive: { configured: boolean; popularTotal: number; trendingTotal: number; fetchedAt: string } | null =
+      null;
+
+    if (tmdb.isConfigured()) {
+      try {
+        const [popular, trending] = await Promise.all([
+          tmdb.getPopular(1),
+          tmdb.getTrending(1)
+        ]);
+        tmdbCatalogSize = Math.max(
+          tmdbCatalogSize,
+          Number(popular.total_results) || 0,
+          Number(trending.total_results) || 0
+        );
+        tmdbLive = {
+          configured: true,
+          popularTotal: Number(popular.total_results) || 0,
+          trendingTotal: Number(trending.total_results) || 0,
+          fetchedAt: new Date().toISOString()
+        };
+      } catch {
+        tmdbLive = {
+          configured: true,
+          popularTotal: 0,
+          trendingTotal: 0,
+          fetchedAt: new Date().toISOString()
+        };
+      }
+    }
+
+    const stats = db.getStreamingStats(tmdbCatalogSize);
+    res.json({
+      success: true,
+      configured: nexstream.isConfigured() || vidsrc.isConfigured(),
+      providers: {
+        nexstream: nexstream.isConfigured(),
+        vidsrc: vidsrc.isConfigured()
+      },
+      trackedMovies: trackedIds.size,
+      tmdbLive,
+      stats
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load streaming stats' });
+  }
+});
+
+app.get('/api/admin/streaming/associations', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : 'all';
+    const provider = typeof req.query.provider === 'string' ? req.query.provider : 'all';
+    let list = db.getAllStreamAssociations();
+    if (status !== 'all') {
+      list = list.filter(a => a.streamStatus === status);
+    }
+    if (provider !== 'all') {
+      const key = normalizeProviderKey(provider);
+      list = list.filter(a => normalizeProviderKey(a.providerName) === key);
+    }
+    res.json({ success: true, count: list.length, associations: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to list stream associations' });
+  }
+});
+
+async function buildMatchInput(tmdbId: number) {
+  const local = db.getMovieByTmdbId(tmdbId);
+  const existing = db.getStreamAssociationByTmdbId(tmdbId);
+
+  let title = local?.title || existing?.matchedTitle;
+  let originalTitle = local?.originalTitle;
+  let releaseYear = local?.releaseYear || existing?.matchedReleaseYear;
+  let originalLanguage: string | undefined;
+  let imdbId = existing?.imdbId;
+
+  if (tmdb.isConfigured()) {
+    const needsTmdb = !title || !releaseYear || !imdbId;
+    if (needsTmdb) {
+      const details = await tmdb.getMovieDetails(tmdbId);
+      const mapped = tmdb.mapToMovieMetadata(details);
+      title = title || mapped.title;
+      originalTitle = originalTitle || mapped.originalTitle;
+      releaseYear = releaseYear || mapped.releaseYear;
+      originalLanguage = mapped.originalLanguage;
+      imdbId = imdbId || mapped.imdbId;
+    }
+  }
+
+  if (!title) {
+    throw new Error('Unable to resolve TMDB title for matching');
+  }
+
+  return {
+    tmdbId,
+    title,
+    originalTitle,
+    releaseYear,
+    originalLanguage,
+    imdbId,
+    movieId: local?.id,
+    mediaType: 'movie' as const
+  };
+}
+
+app.post('/api/admin/streaming/match/:tmdbId', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB id' });
+    }
+
+    const force = Boolean(req.body?.force);
+    const allowOverwriteManual = Boolean(req.body?.confirmOverwriteManual);
+    const matchInput = await buildMatchInput(tmdbId);
+    const result = await resolveProvidersForMovie(matchInput, { force, allowOverwriteManual });
+
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Match retry failed' });
+  }
+});
+
+app.post('/api/admin/streaming/sync', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!nexstream.isConfigured() && !vidsrc.isConfigured()) {
+      return res.status(503).json({ error: 'No streaming providers are configured on the server' });
+    }
+
+    const force = Boolean(req.body?.force);
+    const onlyUnavailable = Boolean(req.body?.onlyUnavailable);
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.body?.limit || '20'), 10) || 20));
+
+    const movies = db.getAllMovies(false).filter(m => m.tmdbId);
+    const candidates: Array<{
+      tmdbId: number;
+      title: string;
+      originalTitle?: string;
+      releaseYear?: number;
+      imdbId?: string;
+      movieId?: string;
+      mediaType: 'movie';
+    }> = movies.map(m => ({
+      tmdbId: m.tmdbId as number,
+      title: m.title,
+      originalTitle: m.originalTitle,
+      releaseYear: m.releaseYear,
+      movieId: m.id,
+      mediaType: 'movie' as const
+    }));
+
+    for (const assoc of db.getAllStreamAssociations()) {
+      if (!candidates.some(c => c.tmdbId === assoc.tmdbId)) {
+        candidates.push({
+          tmdbId: assoc.tmdbId,
+          title: assoc.matchedTitle || `TMDB ${assoc.tmdbId}`,
+          releaseYear: assoc.matchedReleaseYear,
+          imdbId: assoc.imdbId,
+          mediaType: 'movie'
+        });
+      }
+    }
+
+    const summary = await syncStreamAssociations(candidates, { force, onlyUnavailable, limit });
+    res.json({ success: true, summary });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Streaming sync failed' });
+  }
+});
+
+app.post('/api/admin/streaming/sync-tmdb-list', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    if (!tmdb.isConfigured()) {
+      return res.status(503).json({ error: 'TMDB must be configured' });
+    }
+    if (!nexstream.isConfigured() && !vidsrc.isConfigured()) {
+      return res.status(503).json({ error: 'At least one streaming provider must be configured' });
+    }
+
+    const list = String(req.body?.list || 'popular');
+    const page = Math.max(1, parseInt(String(req.body?.page || '1'), 10) || 1);
+    const force = Boolean(req.body?.force);
+    const aliases: Record<string, TmdbCatalogSection> = {
+      trending: 'trending',
+      popular: 'popular',
+      'top-rated': 'top-rated',
+      'now-playing': 'now-playing',
+      upcoming: 'upcoming',
+      hollywood: 'hollywood',
+      bollywood: 'bollywood',
+      'south-indian': 'south-indian',
+      bengali: 'bengali'
+    };
+    const section = aliases[list];
+    if (!section) {
+      return res.status(400).json({ error: 'Unknown TMDB list' });
+    }
+
+    const data = await tmdb.getCatalogSection(section, page);
+    const candidates = [];
+    for (const r of data.results) {
+      if ('name' in r && !('title' in r)) continue; // prefer movies
+      const enriched = tmdb.enrichSummary(r);
+      let imdbId: string | undefined;
+      try {
+        const details = await tmdb.getMovieDetails(enriched.tmdbId);
+        imdbId = tmdb.mapToMovieMetadata(details).imdbId;
+      } catch {
+        imdbId = undefined;
+      }
+      candidates.push({
+        tmdbId: enriched.tmdbId,
+        title: enriched.title,
+        originalTitle: enriched.originalTitle,
+        releaseYear: enriched.releaseYear,
+        originalLanguage: enriched.language,
+        imdbId,
+        mediaType: 'movie' as const
+      });
+    }
+
+    const summary = await syncStreamAssociations(candidates, {
+      force,
+      limit: Math.min(candidates.length, 20)
+    });
+
+    res.json({
+      success: true,
+      list: section,
+      page,
+      importedCandidates: candidates.length,
+      summary
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'TMDB list sync failed' });
+  }
+});
+
+app.post('/api/admin/streaming/:tmdbId/disable', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB id' });
+    }
+    const disabled = req.body?.disabled !== false;
+    const providerRaw = typeof req.body?.provider === 'string' ? req.body.provider : undefined;
+    const provider = providerRaw ? normalizeProviderKey(providerRaw) : undefined;
+
+    let assoc = db.disableStreamAssociation(tmdbId, disabled, provider);
+    if (!assoc) {
+      const key = provider || 'nexstream';
+      assoc = db.upsertStreamAssociation({
+        tmdbId,
+        providerName: key,
+        providerMovieId: String(tmdbId),
+        nexstreamProviderId: key === 'nexstream' ? String(tmdbId) : undefined,
+        playbackReference:
+          key === 'vidsrc'
+            ? vidsrc.buildEmbedPath(String(tmdbId), 'movie')
+            : nexstream.buildEmbedPath(tmdbId, 'movie'),
+        playbackType: 'embed',
+        streamStatus: 'disabled',
+        matchConfidence: 'none',
+        matchSource: 'manual',
+        manualOverride: true,
+        disabled: true,
+        mediaType: 'movie'
+      });
+    }
+    res.json({ success: true, association: assoc });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to disable stream' });
+  }
+});
+
+app.post('/api/admin/streaming/:tmdbId/approve', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB id' });
+    }
+    const providerRaw = typeof req.body?.provider === 'string' ? req.body.provider : undefined;
+    const provider = providerRaw ? normalizeProviderKey(providerRaw) : undefined;
+    const assoc = db.approveUncertainStream(tmdbId, provider);
+    if (!assoc) {
+      return res.status(404).json({ error: 'No association found for this TMDB id' });
+    }
+    res.json({ success: true, association: assoc });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to approve match' });
+  }
+});
+
+app.post('/api/admin/streaming/:tmdbId/select', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB id' });
+    }
+    const providerRaw = String(req.body?.provider || '').trim();
+    if (!providerRaw) {
+      return res.status(400).json({ error: 'provider is required (nexstream|vidsrc)' });
+    }
+    const provider = normalizeProviderKey(providerRaw) as StreamingProviderKey;
+    const confirmOverwriteManual = Boolean(req.body?.confirmOverwriteManual);
+    const assoc = db.selectStreamProvider(tmdbId, provider, { confirmOverwriteManual });
+    if (!assoc) {
+      return res.status(404).json({
+        error: `No ${providerDisplayName(provider)} association found for TMDB ${tmdbId}`
+      });
+    }
+    res.json({
+      success: true,
+      association: assoc,
+      active: publicStreamPayload(db.getStreamAssociationByTmdbId(tmdbId))
+    });
+  } catch (err: any) {
+    const status = String(err.message || '').includes('Manual provider selection') ? 409 : 500;
+    res.status(status).json({ error: err.message || 'Failed to select provider' });
+  }
+});
+
+app.post('/api/admin/streaming/:tmdbId/refresh', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const tmdbId = parseInt(req.params.tmdbId, 10);
+    if (!Number.isFinite(tmdbId)) {
+      return res.status(400).json({ error: 'Invalid TMDB id' });
+    }
+
+    const matchInput = await buildMatchInput(tmdbId);
+    const result = await resolveProvidersForMovie(matchInput, {
+      force: true,
+      allowOverwriteManual: Boolean(req.body?.confirmOverwriteManual)
+    });
+
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to refresh stream status' });
   }
 });
 

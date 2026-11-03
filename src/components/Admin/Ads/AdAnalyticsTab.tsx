@@ -9,7 +9,6 @@ import {
   Calendar,
   Layers,
   ArrowUpRight,
-  Sparkles,
   PieChart,
   RefreshCw
 } from 'lucide-react';
@@ -19,7 +18,6 @@ import { api } from '../../../services/api.ts';
 export const AdAnalyticsTab: React.FC = () => {
   const [report, setReport] = useState<AdAnalyticsReport | null>(null);
   const [loading, setLoading] = useState(true);
-  const [timeframe, setTimeframe] = useState<'7d' | '30d' | 'all'>('7d');
 
   const fetchAnalytics = async () => {
     try {
@@ -48,7 +46,9 @@ export const AdAnalyticsTab: React.FC = () => {
 
   if (!report) return null;
 
-  const { summary, byPosition, byNetwork, byDevice, dailyReports } = report;
+  const { summary, byNetwork, byDevice, dailyReports } = report;
+  const networkEntries = Object.entries(byNetwork);
+  const hasTraffic = summary.totalImpressions > 0 || summary.totalClicks > 0;
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -60,18 +60,25 @@ export const AdAnalyticsTab: React.FC = () => {
             <span>Advertising Revenue & Performance Analytics</span>
           </h2>
           <p className="text-xs text-neutral-400 mt-0.5">
-            Real-time tracking of impressions, clicks, click-through rates (CTR), and network earnings
+            Live metrics from real site impressions & clicks (no demo seed numbers)
           </p>
         </div>
 
         <button
           onClick={fetchAnalytics}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-semibold border border-neutral-700 cursor-pointer"
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-neutral-300 text-xs font-semibold border border-neutral-700 cursor-pointer disabled:opacity-50"
         >
-          <RefreshCw className="w-3.5 h-3.5" />
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh Metrics</span>
         </button>
       </div>
+
+      {!hasTraffic && (
+        <div className="p-4 rounded-2xl bg-neutral-900/70 border border-neutral-800 text-sm text-neutral-400">
+          No ad traffic recorded yet. Numbers will fill in as visitors see and click ads on the live site.
+        </div>
+      )}
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -90,7 +97,7 @@ export const AdAnalyticsTab: React.FC = () => {
           </div>
           <div className="flex items-center gap-1 text-[11px] text-emerald-400">
             <ArrowUpRight className="w-3 h-3" />
-            <span>Across all active ad networks</span>
+            <span>From tracked CPM + CPC events</span>
           </div>
         </div>
 
@@ -143,8 +150,8 @@ export const AdAnalyticsTab: React.FC = () => {
           <div className="text-2xl sm:text-3xl font-black text-white">
             {summary.overallCtr.toFixed(2)}%
           </div>
-          <div className="text-[11px] text-emerald-400">
-            High performance monetization
+          <div className="text-[11px] text-neutral-500">
+            Clicks ÷ impressions
           </div>
         </div>
       </div>
@@ -159,45 +166,49 @@ export const AdAnalyticsTab: React.FC = () => {
           </h3>
 
           <div className="space-y-3">
-            {Object.entries(byNetwork).map(([network, data]) => {
-              const share = summary.totalEstimatedEarnings > 0
-                ? ((data.earnings / summary.totalEstimatedEarnings) * 100)
-                : 0;
+            {networkEntries.length === 0 ? (
+              <p className="text-xs text-neutral-500">No ad networks configured yet.</p>
+            ) : (
+              networkEntries.map(([network, data]) => {
+                const share = summary.totalEstimatedEarnings > 0
+                  ? ((data.earnings / summary.totalEstimatedEarnings) * 100)
+                  : 0;
 
-              return (
-                <div key={network} className="space-y-1.5 p-3 rounded-xl bg-neutral-950 border border-neutral-800/80">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-white uppercase tracking-wider">
-                      {network === 'adsense'
-                        ? 'Google AdSense'
-                        : network === 'admanager'
-                        ? 'Google Ad Manager'
-                        : network === 'monetag'
-                        ? 'Monetag'
-                        : network === 'adsterra'
-                        ? 'Adsterra'
-                        : 'Custom Direct / HTML'}
-                    </span>
-                    <span className="font-extrabold text-emerald-400">
-                      ${data.earnings.toFixed(2)} ({share.toFixed(1)}%)
-                    </span>
-                  </div>
+                return (
+                  <div key={network} className="space-y-1.5 p-3 rounded-xl bg-neutral-950 border border-neutral-800/80">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-white uppercase tracking-wider">
+                        {network === 'adsense'
+                          ? 'Google AdSense'
+                          : network === 'admanager'
+                          ? 'Google Ad Manager'
+                          : network === 'monetag'
+                          ? 'Monetag'
+                          : network === 'adsterra'
+                          ? 'Adsterra'
+                          : 'Custom Direct / HTML'}
+                      </span>
+                      <span className="font-extrabold text-emerald-400">
+                        ${data.earnings.toFixed(2)} ({share.toFixed(1)}%)
+                      </span>
+                    </div>
 
-                  <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full"
-                      style={{ width: `${Math.min(100, Math.max(8, share))}%` }}
-                    />
-                  </div>
+                    <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full"
+                        style={{ width: `${share > 0 ? Math.min(100, Math.max(4, share)) : 0}%` }}
+                      />
+                    </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-neutral-400 pt-0.5">
-                    <span>{data.impressions.toLocaleString()} views</span>
-                    <span>{data.clicks.toLocaleString()} clicks</span>
-                    <span>{data.count} ad slots</span>
+                    <div className="flex items-center justify-between text-[11px] text-neutral-400 pt-0.5">
+                      <span>{data.impressions.toLocaleString()} views</span>
+                      <span>{data.clicks.toLocaleString()} clicks</span>
+                      <span>{data.count} ad slots</span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -241,7 +252,7 @@ export const AdAnalyticsTab: React.FC = () => {
           </div>
 
           <div className="p-3.5 rounded-xl bg-neutral-950/80 border border-neutral-800 text-xs text-neutral-400">
-            <span className="font-bold text-neutral-300">Monetization Insight:</span> Desktop users generate higher CPMs on sidebar half-page and top leaderboard placements, while mobile users provide solid CTR on between-section billboard banners.
+            Device split is calculated from real recorded ad events on this site.
           </div>
         </div>
       </div>

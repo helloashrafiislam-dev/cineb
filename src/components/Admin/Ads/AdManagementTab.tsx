@@ -285,6 +285,40 @@ export const AdManagementTab: React.FC<AdManagementTabProps> = ({ onAdDataChange
                   className="w-full bg-neutral-950 border border-neutral-700 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
                 />
               </div>
+
+              <label className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-950 border border-neutral-800/80 cursor-pointer">
+                <div>
+                  <span className="block text-neutral-200">Movie Card Click → Ad</span>
+                  <span className="text-[10px] text-neutral-500">
+                    Sometimes 1st click opens ad; 2nd click opens details
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.cardClickAdEnabled ?? true}
+                  onChange={e => handleUpdateSettings({ cardClickAdEnabled: e.target.checked })}
+                  className="w-4 h-4 accent-amber-500 rounded"
+                />
+              </label>
+
+              <div>
+                <label className="block text-neutral-400 mb-1">
+                  Card Click Ad Chance ({settings.cardClickAdChancePercent ?? 40}%)
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={settings.cardClickAdChancePercent ?? 40}
+                  onChange={e =>
+                    handleUpdateSettings({
+                      cardClickAdChancePercent: parseInt(e.target.value, 10) || 0
+                    })
+                  }
+                  className="w-full accent-amber-500"
+                />
+              </div>
             </div>
           </div>
 
@@ -328,7 +362,7 @@ export const AdManagementTab: React.FC<AdManagementTabProps> = ({ onAdDataChange
 
       {/* Ad Slots Management Toolbar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 rounded-2xl bg-neutral-900/60 border border-neutral-800">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={handleOpenAdd}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-xl shadow-red-950 transition-all cursor-pointer"
@@ -336,6 +370,9 @@ export const AdManagementTab: React.FC<AdManagementTabProps> = ({ onAdDataChange
             <Plus className="w-4 h-4" />
             <span>Add New Ad Slot</span>
           </button>
+          <span className="text-[11px] text-neutral-500">
+            {slots.length} slots · impressions/clicks from live site tracking
+          </span>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">

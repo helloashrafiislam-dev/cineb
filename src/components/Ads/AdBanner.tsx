@@ -8,6 +8,8 @@ interface AdBannerProps {
   slots: AdSlot[];
   settings: AdSettings;
   className?: string;
+  /** Force a large rectangle suitable for side-by-side bottom rows */
+  forceLarge?: boolean;
   onAdClick?: (slot: AdSlot) => void;
 }
 
@@ -16,6 +18,7 @@ export const AdBanner: React.FC<AdBannerProps> = ({
   slots,
   settings,
   className = '',
+  forceLarge = false,
   onAdClick
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -83,6 +86,9 @@ export const AdBanner: React.FC<AdBannerProps> = ({
 
   // Determine sizing styles
   const getDimensionClass = () => {
+    if (forceLarge) {
+      return 'w-full min-h-[220px] sm:min-h-[280px] h-full';
+    }
     switch (slot.dimensions) {
       case '728x90':
         return 'w-full max-w-[728px] h-[90px]';

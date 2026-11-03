@@ -23,6 +23,117 @@ export interface Movie {
   duration: string;
   createdAt: string;
   updatedAt: string;
+  /** TMDB metadata (optional — existing seed movies may omit these) */
+  tmdbId?: number;
+  originalTitle?: string;
+  posterPath?: string | null;
+  backdropPath?: string | null;
+  releaseDate?: string;
+  runtime?: number;
+  trailerUrl?: string;
+  /**
+   * When true, streamingUrl was set/edited by an admin and must not be
+   * overwritten by automatic NexStream matching without confirmation.
+   */
+  manualPlaybackOverride?: boolean;
+}
+
+export type StreamStatus =
+  | 'available'
+  | 'unavailable'
+  | 'uncertain'
+  | 'failed'
+  | 'disabled';
+
+export type MatchConfidence =
+  | 'exact_tmdb_id'
+  | 'exact_imdb_id'
+  | 'exact_original_title_year'
+  | 'exact_localized_title_year'
+  | 'normalized_title_year'
+  | 'alternative_title_year'
+  | 'uncertain'
+  | 'none';
+
+/** Canonical provider keys used for priority + storage. */
+export type StreamingProviderKey = 'nexstream' | 'vidsrc';
+
+export const PROVIDER_PRIORITY: StreamingProviderKey[] = ['nexstream', 'vidsrc'];
+
+export function providerDisplayName(key: StreamingProviderKey | string | undefined): string {
+  if (key === 'vidsrc' || key === 'Vidsrc') return 'Vidsrc';
+  if (key === 'nexstream' || key === 'NexStream') return 'NexStream';
+  return String(key || 'Unknown');
+}
+
+export function normalizeProviderKey(
+  value?: string | null
+): StreamingProviderKey {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'vidsrc') return 'vidsrc';
+  return 'nexstream';
+}
+
+/**
+ * Provider streaming association — kept separate from TMDB catalog metadata.
+ * One movie (tmdbId) may have multiple provider records.
+ */
+export interface StreamAssociation {
+  id: string;
+  /** Optional local catalog movie id — never overwrites TMDB metadata */
+  movieId?: string;
+  tmdbId: number;
+  imdbId?: string;
+  /** Canonical provider key */
+  providerName: StreamingProviderKey;
+  /** Provider-side id (TMDB id for NexStream; IMDb/TMDB for Vidsrc) */
+  providerMovieId: string;
+  /** @deprecated Use providerMovieId — kept for older NexStream rows */
+  nexstreamProviderId?: string;
+  matchedTitle?: string;
+  matchedReleaseYear?: number;
+  /** Relative provider path only, e.g. /embed/movie/597 — never includes API key */
+  playbackReference: string;
+  playbackType: 'embed' | 'hls' | 'dash' | 'mp4' | 'unknown';
+  /** Normalized availability (alias of streamStatus for common format) */
+  availabilityStatus?: StreamStatus;
+  streamStatus: StreamStatus;
+  matchConfidence: MatchConfidence;
+  matchSource: 'automatic' | 'manual';
+  manualOverride: boolean;
+  /** Admin chose this provider as the active source for the movie */
+  selectedByAdmin?: boolean;
+  disabled?: boolean;
+  lastCheckedAt?: string;
+  lastSyncedAt?: string;
+  lastError?: string;
+  providerMeta?: { title?: string; poster?: string } | null;
+  mediaType?: 'movie' | 'tv';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Per-movie admin preference across providers (does not store TMDB metadata). */
+export interface MovieStreamPreference {
+  tmdbId: number;
+  preferredProvider?: StreamingProviderKey | null;
+  manualOverride: boolean;
+  updatedAt: string;
+}
+
+export interface StreamingSyncMeta {
+  lastSyncAt?: string;
+  lastSyncSummary?: {
+    processed: number;
+    available: number;
+    unavailable: number;
+    uncertain: number;
+    failed: number;
+    skipped: number;
+    nexstreamMatched?: number;
+    vidsrcMatched?: number;
+    bothProviders?: number;
+  };
 }
 
 export interface Category {
@@ -96,6 +207,10 @@ export interface AdSettings {
   popupNetwork: AdNetwork;
   popupCode: string;
   popupTargetUrl: string;
+  /** Sometimes first movie-card click opens ad; next click goes to details */
+  cardClickAdEnabled: boolean;
+  /** Probability (0–100) that a first click opens an ad tab */
+  cardClickAdChancePercent: number;
   homeAdsEnabled: boolean;
   detailsAdsEnabled: boolean;
   playerAdsEnabled: boolean;
@@ -122,6 +237,9 @@ export interface DatabaseSchema {
   adSlots: AdSlot[];
   adSettings: AdSettings;
   adEvents: AdEventRecord[];
+  streamAssociations: StreamAssociation[];
+  movieStreamPreferences: MovieStreamPreference[];
+  streamingSyncMeta: StreamingSyncMeta;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -140,96 +258,7 @@ const INITIAL_CATEGORIES: Category[] = [
   { id: 'cat-animation', name: 'Animation', slug: 'animation', description: 'Stunning animated films for all audiences', displayOrder: 6 }
 ];
 
-const INITIAL_MOVIES: Movie[] = [
-  {
-    id: 'movie-the-paradise-2026',
-    title: 'The Paradise',
-    description: 'In a fractured near-future territory known as The Paradise, an elite operative must navigate an intricate web of cartel power struggles, personal vengeance, and shifting allegiances to uncover the truth behind a high-level military conspiracy.',
-    releaseYear: 2026,
-    genre: ['Action', 'Drama'],
-    category: 'Action / Drama',
-    quality: '1080p',
-    language: 'Hindi + Telugu',
-    streamingUrl: 'http://ftp13.circleftp.net/FILE/Tamil%20Telugu%20%26%20Others%20Hindi%20Dubbed/2026/The%20Paradise%20%282026%29%201080p%20WEB-DL%20%5BDual%20Audio%5D%20%5BHindi%2BTelugu%5D%20x264/The%20Paradise%20%282026%29%201080p%20WEB-DL%20%5BDual%20Audio%5D%20%5BHindi%2BTelugu%5D%20x264.mkv',
-    posterUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80',
-    backdropUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
-    isFeatured: true,
-    isTrending: true,
-    isPopular: true,
-    isPublished: true,
-    views: 34210,
-    rating: 8.8,
-    duration: '2h 28m',
-    createdAt: '2026-01-15T10:00:00.000Z',
-    updatedAt: '2026-02-01T14:30:00.000Z'
-  },
-  {
-    id: 'movie-cyber-reign-2026',
-    title: 'Cyber Reign: Sector 9',
-    description: 'When the central neural network governing Neo-Tokyo malfunctions, a rogue bounty hunter and an AI scientist enter the digital underworld to prevent total blackout before midnight.',
-    releaseYear: 2026,
-    genre: ['Sci-Fi', 'Action'],
-    category: 'Sci-Fi',
-    quality: '4K',
-    language: 'English',
-    streamingUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-    posterUrl: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=800&auto=format&fit=crop&q=80',
-    backdropUrl: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1600&auto=format&fit=crop&q=80',
-    isFeatured: true,
-    isTrending: true,
-    isPopular: true,
-    isPublished: true,
-    views: 28940,
-    rating: 8.5,
-    duration: '1h 56m',
-    createdAt: '2026-01-20T12:00:00.000Z',
-    updatedAt: '2026-02-02T09:15:00.000Z'
-  },
-  {
-    id: 'movie-shadow-of-valkyrie-2025',
-    title: 'Shadow of Valkyrie',
-    description: 'Deep behind enemy battle lines, an undercover surveillance pilot discovers an experimental hypersonic weapon that could alter global supremacy overnight.',
-    releaseYear: 2025,
-    genre: ['Action', 'Thriller'],
-    category: 'Action',
-    quality: '1080p',
-    language: 'Hindi',
-    streamingUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-    posterUrl: 'https://images.unsplash.com/photo-1509281373149-e957c6296406?w=800&auto=format&fit=crop&q=80',
-    backdropUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
-    isFeatured: false,
-    isTrending: true,
-    isPopular: true,
-    isPublished: true,
-    views: 19500,
-    rating: 7.9,
-    duration: '2h 12m',
-    createdAt: '2025-11-10T08:00:00.000Z',
-    updatedAt: '2026-01-05T18:00:00.000Z'
-  },
-  {
-    id: 'movie-the-last-horizon-2026',
-    title: 'The Last Horizon',
-    description: 'As atmospheric dust storms threaten civilization, an interstellar navigation crew embarks on humanity\'s final exploratory mission to establish a viable planetary colony.',
-    releaseYear: 2026,
-    genre: ['Sci-Fi', 'Drama'],
-    category: 'Sci-Fi',
-    quality: '4K',
-    language: 'English',
-    streamingUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-    posterUrl: 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=800&auto=format&fit=crop&q=80',
-    backdropUrl: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=1600&auto=format&fit=crop&q=80',
-    isFeatured: true,
-    isTrending: true,
-    isPopular: true,
-    isPublished: true,
-    views: 45200,
-    rating: 9.1,
-    duration: '2h 45m',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-02-01T10:00:00.000Z'
-  }
-];
+const INITIAL_MOVIES: Movie[] = [];
 
 const INITIAL_AD_SETTINGS: AdSettings = {
   masterEnabled: true,
@@ -238,6 +267,8 @@ const INITIAL_AD_SETTINGS: AdSettings = {
   popupNetwork: 'monetag',
   popupCode: '<!-- Monetag Smart Popunder Tag (Policy-Compliant frequency-capped) -->',
   popupTargetUrl: 'https://nordvpn.com/special-deal-4k-streaming',
+  cardClickAdEnabled: true,
+  cardClickAdChancePercent: 40,
   homeAdsEnabled: true,
   detailsAdsEnabled: true,
   playerAdsEnabled: true,
@@ -262,9 +293,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 2.20,
     cpcRate: 0.45,
-    impressions: 4210,
-    clicks: 168,
-    estimatedEarnings: 84.86,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -284,9 +315,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'desktop',
     cpmRate: 2.50,
     cpcRate: 0.50,
-    impressions: 3890,
-    clicks: 142,
-    estimatedEarnings: 80.72,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -306,9 +337,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'desktop',
     cpmRate: 1.95,
     cpcRate: 0.38,
-    impressions: 5120,
-    clicks: 210,
-    estimatedEarnings: 89.78,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -328,9 +359,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'desktop',
     cpmRate: 3.10,
     cpcRate: 0.65,
-    impressions: 4890,
-    clicks: 235,
-    estimatedEarnings: 167.90,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -350,9 +381,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 2.80,
     cpcRate: 0.55,
-    impressions: 6300,
-    clicks: 280,
-    estimatedEarnings: 171.64,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-12T10:00:00.000Z',
     updatedAt: '2026-02-01T14:00:00.000Z'
   },
@@ -372,19 +403,19 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 3.50,
     cpcRate: 0.70,
-    impressions: 2980,
-    clicks: 194,
-    estimatedEarnings: 146.23,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-15T09:00:00.000Z',
     updatedAt: '2026-02-01T15:00:00.000Z'
   },
   {
     id: 'ad-home-footer-banner',
-    name: 'Footer Leaderboard (728x90)',
+    name: 'Footer Large Rectangle (300x250)',
     position: 'home_footer',
     network: 'adsense',
-    dimensions: '728x90',
-    codeSnippet: '<!-- Google AdSense Footer Sticky Banner 728x90 -->',
+    dimensions: '300x250',
+    codeSnippet: '<!-- Google AdSense Footer Large Rectangle -->',
     targetUrl: 'https://www.netflix.com',
     imageUrl: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=1200&auto=format&fit=crop&q=80',
     titleText: 'Stream Unlimited 4K Cinema Anywhere On Any Device',
@@ -394,15 +425,15 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 1.60,
     cpcRate: 0.30,
-    impressions: 3410,
-    clicks: 98,
-    estimatedEarnings: 34.85,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
   {
     id: 'ad-details-top',
-    name: 'Details Page Top Banner (728x90)',
+    name: 'Details Page Top Banner (728x90) — unused (no top-of-page ads)',
     position: 'movie_details_top',
     network: 'adsense',
     dimensions: '728x90',
@@ -411,14 +442,14 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     imageUrl: 'https://images.unsplash.com/photo-1545454675-3531b543be5d?w=1200&auto=format&fit=crop&q=80',
     titleText: 'Cinematic Soundbars with Wireless Subwoofer — Crystal Clear Dialogue',
     badgeLabel: 'Sponsored',
-    enabled: true,
+    enabled: false,
     isSticky: false,
     targetDevice: 'all',
     cpmRate: 2.10,
     cpcRate: 0.42,
-    impressions: 2150,
-    clicks: 86,
-    estimatedEarnings: 40.63,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-15T12:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -438,9 +469,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 2.40,
     cpcRate: 0.48,
-    impressions: 1840,
-    clicks: 72,
-    estimatedEarnings: 38.97,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-15T12:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -460,19 +491,19 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 3.20,
     cpcRate: 0.60,
-    impressions: 2600,
-    clicks: 145,
-    estimatedEarnings: 95.32,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-15T12:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
   {
     id: 'ad-details-below-related',
-    name: 'Below Related Movies Banner (728x90)',
+    name: 'Below Related Movies Large Rectangle (300x250)',
     position: 'movie_details_below_related',
     network: 'admanager',
-    dimensions: '728x90',
-    codeSnippet: '<!-- Google Ad Manager Footer 728x90 -->',
+    dimensions: '300x250',
+    codeSnippet: '<!-- Google Ad Manager Large Footer Rectangle -->',
     targetUrl: 'https://www.disneyplus.com',
     imageUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=1200&auto=format&fit=crop&q=80',
     titleText: 'Explore Exclusive Originals, Blockbusters & Animated Epics',
@@ -482,9 +513,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 1.80,
     cpcRate: 0.35,
-    impressions: 1980,
-    clicks: 64,
-    estimatedEarnings: 25.96,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-15T12:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -504,9 +535,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 3.40,
     cpcRate: 0.68,
-    impressions: 3120,
-    clicks: 138,
-    estimatedEarnings: 104.44,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-16T10:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -526,9 +557,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 3.80,
     cpcRate: 0.75,
-    impressions: 3950,
-    clicks: 184,
-    estimatedEarnings: 153.01,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-16T10:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -548,9 +579,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'desktop',
     cpmRate: 2.70,
     cpcRate: 0.52,
-    impressions: 2780,
-    clicks: 96,
-    estimatedEarnings: 57.42,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-16T10:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -570,9 +601,9 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'desktop',
     cpmRate: 2.70,
     cpcRate: 0.52,
-    impressions: 2650,
-    clicks: 91,
-    estimatedEarnings: 54.47,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-16T10:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   },
@@ -591,13 +622,101 @@ const INITIAL_AD_SLOTS: AdSlot[] = [
     targetDevice: 'all',
     cpmRate: 5.50,
     cpcRate: 1.10,
-    impressions: 1420,
-    clicks: 82,
-    estimatedEarnings: 98.01,
+    impressions: 0,
+    clicks: 0,
+    estimatedEarnings: 0,
     createdAt: '2026-01-10T08:00:00.000Z',
     updatedAt: '2026-02-01T12:00:00.000Z'
   }
 ];
+
+/** Recalculate impressions / clicks / earnings from tracked adEvents only. */
+function rebuildAdSlotMetricsFromEvents(
+  slots: AdSlot[],
+  events: AdEventRecord[]
+): { slots: AdSlot[]; changed: boolean } {
+  const totals = new Map<string, { impressions: number; clicks: number; earnings: number }>();
+  for (const ev of events) {
+    if (!ev?.adSlotId) continue;
+    const cur = totals.get(ev.adSlotId) || { impressions: 0, clicks: 0, earnings: 0 };
+    if (ev.type === 'impression') cur.impressions += 1;
+    if (ev.type === 'click') cur.clicks += 1;
+    cur.earnings += Number(ev.earnings) || 0;
+    totals.set(ev.adSlotId, cur);
+  }
+
+  let changed = false;
+  const next = slots.map(slot => {
+    const t = totals.get(slot.id) || { impressions: 0, clicks: 0, earnings: 0 };
+    const earnings = Number(t.earnings.toFixed(2));
+    if (
+      slot.impressions !== t.impressions ||
+      slot.clicks !== t.clicks ||
+      Number(slot.estimatedEarnings || 0) !== earnings
+    ) {
+      changed = true;
+      return {
+        ...slot,
+        impressions: t.impressions,
+        clicks: t.clicks,
+        estimatedEarnings: earnings
+      };
+    }
+    return slot;
+  });
+
+  return { slots: next, changed };
+}
+
+function migrateStreamAssociations(list: StreamAssociation[]): {
+  list: StreamAssociation[];
+  changed: boolean;
+} {
+  let changed = false;
+  const migrated = list.map(raw => {
+    const next: StreamAssociation = { ...raw };
+    if (!next.providerName) {
+      next.providerName = 'nexstream';
+      changed = true;
+    } else {
+      const normalized = normalizeProviderKey(next.providerName);
+      if (normalized !== next.providerName) {
+        next.providerName = normalized;
+        changed = true;
+      }
+    }
+    if (!next.providerMovieId) {
+      next.providerMovieId = String(next.nexstreamProviderId || next.tmdbId);
+      changed = true;
+    }
+    if (!next.availabilityStatus) {
+      next.availabilityStatus = next.streamStatus;
+      changed = true;
+    }
+    if (next.providerName === 'nexstream' && !next.nexstreamProviderId) {
+      next.nexstreamProviderId = next.providerMovieId;
+      changed = true;
+    }
+    return next;
+  });
+
+  // Deduplicate by (tmdbId, providerName) — keep newest updatedAt
+  const seen = new Map<string, StreamAssociation>();
+  for (const assoc of migrated) {
+    const key = `${assoc.tmdbId}:${normalizeProviderKey(assoc.providerName)}`;
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, assoc);
+      continue;
+    }
+    changed = true;
+    const existingTime = new Date(existing.updatedAt || 0).getTime();
+    const nextTime = new Date(assoc.updatedAt || 0).getTime();
+    if (nextTime >= existingTime) seen.set(key, assoc);
+  }
+
+  return { list: Array.from(seen.values()), changed };
+}
 
 class Database {
   private data: DatabaseSchema;
@@ -620,11 +739,9 @@ class Database {
         const parsed = JSON.parse(raw) as DatabaseSchema;
 
         let needsSave = false;
-        // Verify default test movie is present
-        const hasParadise = parsed.movies?.some(m => m.title.toLowerCase() === 'the paradise');
-        if (!hasParadise) {
-          if (!parsed.movies) parsed.movies = [];
-          parsed.movies.unshift(INITIAL_MOVIES[0]);
+
+        if (!Array.isArray(parsed.movies)) {
+          parsed.movies = [];
           needsSave = true;
         }
 
@@ -636,9 +753,52 @@ class Database {
         if (!parsed.adSettings) {
           parsed.adSettings = INITIAL_AD_SETTINGS;
           needsSave = true;
+        } else {
+          // Backfill newer ad settings keys for existing databases
+          const mergedSettings: AdSettings = {
+            ...INITIAL_AD_SETTINGS,
+            ...parsed.adSettings
+          };
+          if (
+            parsed.adSettings.cardClickAdEnabled === undefined ||
+            parsed.adSettings.cardClickAdChancePercent === undefined
+          ) {
+            parsed.adSettings = mergedSettings;
+            needsSave = true;
+          }
         }
         if (!parsed.adEvents) {
           parsed.adEvents = [];
+          needsSave = true;
+        }
+
+        // Rebuild slot counters from real adEvents (drop seeded demo metrics)
+        if (Array.isArray(parsed.adSlots) && parsed.adSlots.length > 0) {
+          const rebuilt = rebuildAdSlotMetricsFromEvents(parsed.adSlots, parsed.adEvents || []);
+          if (rebuilt.changed) {
+            parsed.adSlots = rebuilt.slots;
+            needsSave = true;
+          }
+        }
+
+        if (!Array.isArray(parsed.streamAssociations)) {
+          parsed.streamAssociations = [];
+          needsSave = true;
+        } else {
+          const migrated = migrateStreamAssociations(parsed.streamAssociations);
+          if (migrated.changed) {
+            parsed.streamAssociations = migrated.list;
+            needsSave = true;
+          }
+        }
+
+        if (!Array.isArray(parsed.movieStreamPreferences)) {
+          parsed.movieStreamPreferences = [];
+          needsSave = true;
+        }
+
+        if (!parsed.streamingSyncMeta || typeof parsed.streamingSyncMeta !== 'object') {
+          parsed.streamingSyncMeta = {};
           needsSave = true;
         }
 
@@ -671,7 +831,10 @@ class Database {
       movies: INITIAL_MOVIES,
       adSlots: INITIAL_AD_SLOTS,
       adSettings: INITIAL_AD_SETTINGS,
-      adEvents: []
+      adEvents: [],
+      streamAssociations: [],
+      movieStreamPreferences: [],
+      streamingSyncMeta: {}
     };
 
     this.saveData(initialData);
@@ -715,7 +878,19 @@ class Database {
     return this.data.movies.find(m => m.id === id);
   }
 
+  public getMovieByTmdbId(tmdbId: number): Movie | undefined {
+    if (!tmdbId) return undefined;
+    return this.data.movies.find(m => m.tmdbId === tmdbId);
+  }
+
   public createMovie(movieInput: Omit<Movie, 'id' | 'createdAt' | 'updatedAt' | 'views'>): Movie {
+    if (movieInput.tmdbId) {
+      const existing = this.getMovieByTmdbId(movieInput.tmdbId);
+      if (existing) {
+        throw new Error(`A movie with TMDB id ${movieInput.tmdbId} already exists (${existing.title}).`);
+      }
+    }
+
     const newMovie: Movie = {
       ...movieInput,
       id: `movie-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -734,9 +909,33 @@ class Database {
     if (index === -1) return null;
 
     const existing = this.data.movies[index];
+
+    // Prevent duplicate tmdbId when reassigning
+    if (updates.tmdbId && updates.tmdbId !== existing.tmdbId) {
+      const clash = this.getMovieByTmdbId(updates.tmdbId);
+      if (clash && clash.id !== id) {
+        throw new Error(`TMDB id ${updates.tmdbId} is already linked to "${clash.title}".`);
+      }
+    }
+
+    // Explicit streamingUrl in the payload wins (including empty string to clear → provider fallback)
+    const nextStreamingUrl =
+      updates.streamingUrl !== undefined
+        ? String(updates.streamingUrl || '').trim()
+        : existing.streamingUrl;
+
+    const nextManualOverride =
+      updates.manualPlaybackOverride !== undefined
+        ? Boolean(updates.manualPlaybackOverride)
+        : updates.streamingUrl !== undefined
+          ? Boolean(nextStreamingUrl)
+          : existing.manualPlaybackOverride;
+
     const updated: Movie = {
       ...existing,
       ...updates,
+      streamingUrl: nextStreamingUrl,
+      manualPlaybackOverride: nextManualOverride,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString()
@@ -765,6 +964,351 @@ class Database {
     }
   }
 
+  // --- Multi-provider streaming association methods ---
+  public getAllStreamAssociations(): StreamAssociation[] {
+    return [...(this.data.streamAssociations || [])];
+  }
+
+  public getStreamAssociationsByTmdbId(tmdbId: number): StreamAssociation[] {
+    if (!tmdbId) return [];
+    return (this.data.streamAssociations || []).filter(a => a.tmdbId === tmdbId);
+  }
+
+  public getStreamAssociation(
+    tmdbId: number,
+    providerName: StreamingProviderKey
+  ): StreamAssociation | undefined {
+    if (!tmdbId) return undefined;
+    const key = normalizeProviderKey(providerName);
+    return (this.data.streamAssociations || []).find(
+      a => a.tmdbId === tmdbId && normalizeProviderKey(a.providerName) === key
+    );
+  }
+
+  /**
+   * Backward-compatible helper: returns the active/preferred association for a movie.
+   * Priority: admin preference → NexStream available → Vidsrc available → first record.
+   */
+  public getStreamAssociationByTmdbId(tmdbId: number): StreamAssociation | undefined {
+    const list = this.getStreamAssociationsByTmdbId(tmdbId);
+    if (list.length === 0) return undefined;
+
+    const pref = this.getMovieStreamPreference(tmdbId);
+    if (pref?.preferredProvider && pref.manualOverride) {
+      const selected = list.find(
+        a =>
+          normalizeProviderKey(a.providerName) === pref.preferredProvider &&
+          !a.disabled &&
+          a.streamStatus === 'available'
+      );
+      if (selected) return selected;
+    }
+
+    const adminSelected = list.find(a => a.selectedByAdmin && !a.disabled && a.streamStatus === 'available');
+    if (adminSelected) return adminSelected;
+
+    for (const key of PROVIDER_PRIORITY) {
+      const hit = list.find(
+        a =>
+          normalizeProviderKey(a.providerName) === key &&
+          !a.disabled &&
+          a.streamStatus === 'available'
+      );
+      if (hit) return hit;
+    }
+
+    // Fallback: first by provider priority regardless of status
+    for (const key of PROVIDER_PRIORITY) {
+      const hit = list.find(a => normalizeProviderKey(a.providerName) === key);
+      if (hit) return hit;
+    }
+    return list[0];
+  }
+
+  public upsertStreamAssociation(
+    input: Omit<StreamAssociation, 'id' | 'createdAt' | 'updatedAt' | 'providerMovieId' | 'providerName'> & {
+      id?: string;
+      createdAt?: string;
+      updatedAt?: string;
+      providerName?: StreamingProviderKey | string;
+      providerMovieId?: string;
+    }
+  ): StreamAssociation {
+    if (!this.data.streamAssociations) this.data.streamAssociations = [];
+
+    const providerKey = normalizeProviderKey(input.providerName || 'nexstream');
+    const providerMovieId = String(
+      input.providerMovieId || input.nexstreamProviderId || input.tmdbId
+    );
+    const streamStatus = input.streamStatus || input.availabilityStatus || 'unavailable';
+    const now = new Date().toISOString();
+
+    const existingIndex = this.data.streamAssociations.findIndex(
+      a => a.tmdbId === input.tmdbId && normalizeProviderKey(a.providerName) === providerKey
+    );
+
+    if (existingIndex >= 0) {
+      const existing = this.data.streamAssociations[existingIndex];
+      const updated: StreamAssociation = {
+        ...existing,
+        ...input,
+        id: existing.id,
+        tmdbId: existing.tmdbId,
+        providerName: providerKey,
+        providerMovieId,
+        nexstreamProviderId:
+          providerKey === 'nexstream' ? providerMovieId : existing.nexstreamProviderId,
+        streamStatus,
+        availabilityStatus: streamStatus,
+        createdAt: existing.createdAt,
+        updatedAt: now,
+        lastError: input.lastError === undefined ? undefined : input.lastError
+      };
+      this.data.streamAssociations[existingIndex] = updated;
+      this.saveData(this.data);
+      return updated;
+    }
+
+    const created: StreamAssociation = {
+      ...input,
+      providerName: providerKey,
+      providerMovieId,
+      nexstreamProviderId: providerKey === 'nexstream' ? providerMovieId : input.nexstreamProviderId,
+      streamStatus,
+      availabilityStatus: streamStatus,
+      id:
+        input.id ||
+        `stream-${providerKey}-${input.tmdbId}-${Math.random().toString(36).substring(2, 7)}`,
+      disabled: Boolean(input.disabled),
+      manualOverride: Boolean(input.manualOverride),
+      selectedByAdmin: Boolean(input.selectedByAdmin),
+      createdAt: input.createdAt || now,
+      updatedAt: now
+    };
+
+    this.data.streamAssociations.unshift(created);
+    this.saveData(this.data);
+    return created;
+  }
+
+  public updateStreamAssociation(
+    tmdbId: number,
+    updates: Partial<Omit<StreamAssociation, 'id' | 'tmdbId' | 'createdAt'>>,
+    providerName?: StreamingProviderKey
+  ): StreamAssociation | null {
+    if (!this.data.streamAssociations) this.data.streamAssociations = [];
+    const key = providerName
+      ? normalizeProviderKey(providerName)
+      : updates.providerName
+        ? normalizeProviderKey(updates.providerName)
+        : null;
+
+    const index = this.data.streamAssociations.findIndex(a => {
+      if (a.tmdbId !== tmdbId) return false;
+      if (!key) return true;
+      return normalizeProviderKey(a.providerName) === key;
+    });
+    if (index < 0) return null;
+
+    const existing = this.data.streamAssociations[index];
+    const nextStatus = updates.streamStatus || updates.availabilityStatus || existing.streamStatus;
+    const updated: StreamAssociation = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      tmdbId: existing.tmdbId,
+      providerName: key || normalizeProviderKey(existing.providerName),
+      streamStatus: nextStatus,
+      availabilityStatus: nextStatus,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString()
+    };
+    this.data.streamAssociations[index] = updated;
+    this.saveData(this.data);
+    return updated;
+  }
+
+  public disableStreamAssociation(
+    tmdbId: number,
+    disabled = true,
+    providerName?: StreamingProviderKey
+  ): StreamAssociation | null {
+    const target =
+      providerName
+        ? this.getStreamAssociation(tmdbId, providerName)
+        : this.getStreamAssociationByTmdbId(tmdbId);
+    if (!target) return null;
+    return this.updateStreamAssociation(
+      tmdbId,
+      {
+        disabled,
+        streamStatus: disabled ? 'disabled' : target.streamStatus === 'disabled' ? 'available' : target.streamStatus,
+        availabilityStatus: disabled ? 'disabled' : target.streamStatus === 'disabled' ? 'available' : target.streamStatus,
+        manualOverride: true,
+        matchSource: 'manual'
+      },
+      normalizeProviderKey(target.providerName)
+    );
+  }
+
+  public approveUncertainStream(
+    tmdbId: number,
+    providerName?: StreamingProviderKey
+  ): StreamAssociation | null {
+    const existing = providerName
+      ? this.getStreamAssociation(tmdbId, providerName)
+      : this.getStreamAssociationsByTmdbId(tmdbId).find(a => a.streamStatus === 'uncertain') ||
+        this.getStreamAssociationByTmdbId(tmdbId);
+    if (!existing) return null;
+    return this.updateStreamAssociation(
+      tmdbId,
+      {
+        streamStatus: 'available',
+        availabilityStatus: 'available',
+        matchConfidence:
+          existing.matchConfidence === 'uncertain' ? 'exact_tmdb_id' : existing.matchConfidence,
+        manualOverride: true,
+        matchSource: 'manual',
+        disabled: false,
+        lastError: undefined
+      },
+      normalizeProviderKey(existing.providerName)
+    );
+  }
+
+  public selectStreamProvider(
+    tmdbId: number,
+    providerName: StreamingProviderKey,
+    options: { confirmOverwriteManual?: boolean } = {}
+  ): StreamAssociation | null {
+    const target = this.getStreamAssociation(tmdbId, providerName);
+    if (!target) return null;
+
+    const pref = this.getMovieStreamPreference(tmdbId);
+    if (pref?.manualOverride && !options.confirmOverwriteManual) {
+      throw new Error(
+        'Manual provider selection is locked. Pass confirmOverwriteManual to replace it.'
+      );
+    }
+
+    // Clear selectedByAdmin on sibling providers
+    for (const assoc of this.getStreamAssociationsByTmdbId(tmdbId)) {
+      const key = normalizeProviderKey(assoc.providerName);
+      this.updateStreamAssociation(
+        tmdbId,
+        {
+          selectedByAdmin: key === providerName,
+          manualOverride: key === providerName ? true : assoc.manualOverride
+        },
+        key
+      );
+    }
+
+    this.setMovieStreamPreference({
+      tmdbId,
+      preferredProvider: providerName,
+      manualOverride: true,
+      updatedAt: new Date().toISOString()
+    });
+
+    return this.getStreamAssociation(tmdbId, providerName) || null;
+  }
+
+  public getMovieStreamPreference(tmdbId: number): MovieStreamPreference | undefined {
+    if (!tmdbId) return undefined;
+    return (this.data.movieStreamPreferences || []).find(p => p.tmdbId === tmdbId);
+  }
+
+  public setMovieStreamPreference(pref: MovieStreamPreference): MovieStreamPreference {
+    if (!this.data.movieStreamPreferences) this.data.movieStreamPreferences = [];
+    const index = this.data.movieStreamPreferences.findIndex(p => p.tmdbId === pref.tmdbId);
+    if (index >= 0) {
+      this.data.movieStreamPreferences[index] = { ...this.data.movieStreamPreferences[index], ...pref };
+    } else {
+      this.data.movieStreamPreferences.push(pref);
+    }
+    this.saveData(this.data);
+    return pref;
+  }
+
+  public getStreamingSyncMeta(): StreamingSyncMeta {
+    return { ...(this.data.streamingSyncMeta || {}) };
+  }
+
+  public setStreamingSyncMeta(meta: StreamingSyncMeta): StreamingSyncMeta {
+    this.data.streamingSyncMeta = {
+      ...(this.data.streamingSyncMeta || {}),
+      ...meta
+    };
+    this.saveData(this.data);
+    return this.data.streamingSyncMeta;
+  }
+
+  public getStreamingStats(tmdbCatalogSize?: number) {
+    const associations = this.data.streamAssociations || [];
+    const moviesWithTmdb = this.data.movies.filter(m => m.tmdbId);
+    const tmdbIds = new Set<number>();
+    for (const a of associations) tmdbIds.add(a.tmdbId);
+    for (const m of moviesWithTmdb) {
+      if (m.tmdbId) tmdbIds.add(m.tmdbId);
+    }
+
+    const byTmdb = new Map<number, StreamAssociation[]>();
+    for (const a of associations) {
+      const list = byTmdb.get(a.tmdbId) || [];
+      list.push(a);
+      byTmdb.set(a.tmdbId, list);
+    }
+
+    let nexstreamMatched = 0;
+    let vidsrcMatched = 0;
+    let bothProviders = 0;
+    let withVerifiedStreams = 0;
+    let withoutStreams = 0;
+    let uncertainMatches = 0;
+    let failedSearches = 0;
+    let providerErrors = 0;
+
+    for (const tmdbId of tmdbIds) {
+      const list = byTmdb.get(tmdbId) || [];
+      const nx = list.find(
+        a => normalizeProviderKey(a.providerName) === 'nexstream' && a.streamStatus === 'available' && !a.disabled
+      );
+      const vs = list.find(
+        a => normalizeProviderKey(a.providerName) === 'vidsrc' && a.streamStatus === 'available' && !a.disabled
+      );
+      if (nx) nexstreamMatched += 1;
+      if (vs) vidsrcMatched += 1;
+      if (nx && vs) bothProviders += 1;
+      if (nx || vs) withVerifiedStreams += 1;
+      else withoutStreams += 1;
+      if (list.some(a => a.streamStatus === 'uncertain')) uncertainMatches += 1;
+      if (list.some(a => a.streamStatus === 'failed')) {
+        failedSearches += 1;
+        providerErrors += 1;
+      }
+    }
+
+    // Movies tracked only via associations with no available provider
+    // already counted. Also count associations that failed independently.
+    providerErrors = associations.filter(a => a.streamStatus === 'failed' || Boolean(a.lastError)).length;
+
+    return {
+      totalTmdbMovies: tmdbCatalogSize ?? Math.max(moviesWithTmdb.length, tmdbIds.size),
+      totalAssociations: associations.length,
+      withVerifiedStreams,
+      withoutStreams,
+      uncertainMatches,
+      failedSearches,
+      nexstreamMatched,
+      vidsrcMatched,
+      bothProviders,
+      providerErrors,
+      lastSyncAt: this.data.streamingSyncMeta?.lastSyncAt || null,
+      lastSyncSummary: this.data.streamingSyncMeta?.lastSyncSummary || null
+    };
+  }
+
   // --- Category Methods ---
   public getCategories(): Category[] {
     return [...this.data.categories];
@@ -786,7 +1330,7 @@ class Database {
 
   // --- Advertising System Methods ---
   public getAdSettings(): AdSettings {
-    return { ...this.data.adSettings };
+    return { ...INITIAL_AD_SETTINGS, ...this.data.adSettings };
   }
 
   public updateAdSettings(updates: Partial<AdSettings>): AdSettings {
@@ -799,6 +1343,11 @@ class Database {
   }
 
   public getAllAdSlots(): AdSlot[] {
+    const rebuilt = rebuildAdSlotMetricsFromEvents(this.data.adSlots || [], this.data.adEvents || []);
+    if (rebuilt.changed) {
+      this.data.adSlots = rebuilt.slots;
+      this.saveData(this.data);
+    }
     return [...(this.data.adSlots || [])];
   }
 
@@ -930,36 +1479,57 @@ class Database {
     return { slot, earningsEarned: earned };
   }
 
-  // --- Revenue & Analytics Reporting ---
+  // --- Revenue & Analytics Reporting (real tracked adEvents only) ---
   public getAdAnalytics() {
-    const slots = this.data.adSlots || [];
-    const totalImpressions = slots.reduce((acc, s) => acc + (s.impressions || 0), 0);
-    const totalClicks = slots.reduce((acc, s) => acc + (s.clicks || 0), 0);
-    const totalEarnings = slots.reduce((acc, s) => acc + (s.estimatedEarnings || 0), 0);
-    const overallCtr = totalImpressions > 0 ? Number(((totalClicks / totalImpressions) * 100).toFixed(2)) : 0;
+    // Keep slot counters aligned with event log before reporting
+    const rebuilt = rebuildAdSlotMetricsFromEvents(this.data.adSlots || [], this.data.adEvents || []);
+    if (rebuilt.changed) {
+      this.data.adSlots = rebuilt.slots;
+      this.saveData(this.data);
+    }
 
-    // Breakdown by Position
+    const slots = this.data.adSlots || [];
+    const events = this.data.adEvents || [];
+
+    const totalImpressions = events.filter(e => e.type === 'impression').length;
+    const totalClicks = events.filter(e => e.type === 'click').length;
+    const totalEarnings = events.reduce((acc, e) => acc + (Number(e.earnings) || 0), 0);
+    const overallCtr =
+      totalImpressions > 0 ? Number(((totalClicks / totalImpressions) * 100).toFixed(2)) : 0;
+
     const byPosition: Record<string, { impressions: number; clicks: number; earnings: number; ctr: number }> = {};
-    // Breakdown by Network
     const byNetwork: Record<string, { impressions: number; clicks: number; earnings: number; count: number }> = {};
 
+    // Slot inventory for network counts (even if no events yet)
     slots.forEach(slot => {
-      // Position breakdown
-      if (!byPosition[slot.position]) {
-        byPosition[slot.position] = { impressions: 0, clicks: 0, earnings: 0, ctr: 0 };
-      }
-      byPosition[slot.position].impressions += slot.impressions;
-      byPosition[slot.position].clicks += slot.clicks;
-      byPosition[slot.position].earnings += slot.estimatedEarnings;
-
-      // Network breakdown
       if (!byNetwork[slot.network]) {
         byNetwork[slot.network] = { impressions: 0, clicks: 0, earnings: 0, count: 0 };
       }
-      byNetwork[slot.network].impressions += slot.impressions;
-      byNetwork[slot.network].clicks += slot.clicks;
-      byNetwork[slot.network].earnings += slot.estimatedEarnings;
       byNetwork[slot.network].count += 1;
+    });
+
+    events.forEach(ev => {
+      const position = ev.position || 'unknown';
+      const network = ev.network || 'custom';
+
+      if (!byPosition[position]) {
+        byPosition[position] = { impressions: 0, clicks: 0, earnings: 0, ctr: 0 };
+      }
+      if (!byNetwork[network]) {
+        byNetwork[network] = { impressions: 0, clicks: 0, earnings: 0, count: 0 };
+      }
+
+      const earned = Number(ev.earnings) || 0;
+      if (ev.type === 'impression') {
+        byPosition[position].impressions += 1;
+        byNetwork[network].impressions += 1;
+      }
+      if (ev.type === 'click') {
+        byPosition[position].clicks += 1;
+        byNetwork[network].clicks += 1;
+      }
+      byPosition[position].earnings += earned;
+      byNetwork[network].earnings += earned;
     });
 
     Object.keys(byPosition).forEach(pos => {
@@ -973,36 +1543,44 @@ class Database {
       n.earnings = Number(n.earnings.toFixed(2));
     });
 
-    // Breakdown by Device from recent events
-    const recentEvents = this.data.adEvents || [];
-    const desktopEvents = recentEvents.filter(e => e.device === 'desktop');
-    const mobileEvents = recentEvents.filter(e => e.device === 'mobile');
+    const desktopEvents = events.filter(e => e.device === 'desktop');
+    const mobileEvents = events.filter(e => e.device === 'mobile');
 
-    const desktopImpressions = desktopEvents.filter(e => e.type === 'impression').length || Math.round(totalImpressions * 0.68);
-    const mobileImpressions = mobileEvents.filter(e => e.type === 'impression').length || Math.round(totalImpressions * 0.32);
-    const desktopClicks = desktopEvents.filter(e => e.type === 'click').length || Math.round(totalClicks * 0.65);
-    const mobileClicks = mobileEvents.filter(e => e.type === 'click').length || Math.round(totalClicks * 0.35);
+    const sumEarnings = (list: AdEventRecord[]) =>
+      Number(list.reduce((acc, e) => acc + (Number(e.earnings) || 0), 0).toFixed(2));
 
-    const desktopEarnings = Number((totalEarnings * 0.67).toFixed(2));
-    const mobileEarnings = Number((totalEarnings * 0.33).toFixed(2));
+    const desktopImpressions = desktopEvents.filter(e => e.type === 'impression').length;
+    const mobileImpressions = mobileEvents.filter(e => e.type === 'impression').length;
+    const desktopClicks = desktopEvents.filter(e => e.type === 'click').length;
+    const mobileClicks = mobileEvents.filter(e => e.type === 'click').length;
 
-    // Daily breakdown for past 7 days
+    // Daily breakdown for past 7 days from real timestamps
     const dailyReports: Array<{ date: string; impressions: number; clicks: number; earnings: number }> = [];
     const today = new Date();
+    const dayBuckets = new Map<string, { impressions: number; clicks: number; earnings: number }>();
+
     for (let i = 6; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(today.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
-      const factor = 0.8 + ((i * 7) % 5) * 0.08;
-      const dayImp = Math.round((totalImpressions / 7) * factor);
-      const dayClicks = Math.round((totalClicks / 7) * factor);
-      const dayEarn = Number(((totalEarnings / 7) * factor).toFixed(2));
+      dayBuckets.set(dateStr, { impressions: 0, clicks: 0, earnings: 0 });
+    }
 
+    events.forEach(ev => {
+      const dateStr = String(ev.timestamp || '').slice(0, 10);
+      const bucket = dayBuckets.get(dateStr);
+      if (!bucket) return;
+      if (ev.type === 'impression') bucket.impressions += 1;
+      if (ev.type === 'click') bucket.clicks += 1;
+      bucket.earnings += Number(ev.earnings) || 0;
+    });
+
+    for (const [date, bucket] of dayBuckets) {
       dailyReports.push({
-        date: dateStr,
-        impressions: dayImp,
-        clicks: dayClicks,
-        earnings: dayEarn
+        date,
+        impressions: bucket.impressions,
+        clicks: bucket.clicks,
+        earnings: Number(bucket.earnings.toFixed(2))
       });
     }
 
@@ -1019,16 +1597,24 @@ class Database {
       byPosition,
       byNetwork,
       byDevice: {
-        desktop: { impressions: desktopImpressions, clicks: desktopClicks, earnings: desktopEarnings },
-        mobile: { impressions: mobileImpressions, clicks: mobileClicks, earnings: mobileEarnings }
+        desktop: {
+          impressions: desktopImpressions,
+          clicks: desktopClicks,
+          earnings: sumEarnings(desktopEvents)
+        },
+        mobile: {
+          impressions: mobileImpressions,
+          clicks: mobileClicks,
+          earnings: sumEarnings(mobileEvents)
+        }
       },
       dailyReports
     };
   }
 
-  // --- Reset/Seed initial test movie & ads if needed ---
+  // --- Reset catalog (no demo movies) & restore default ads/categories ---
   public resetToDefault(): void {
-    this.data.movies = [...INITIAL_MOVIES];
+    this.data.movies = [];
     this.data.categories = [...INITIAL_CATEGORIES];
     this.data.adSlots = [...INITIAL_AD_SLOTS];
     this.data.adSettings = { ...INITIAL_AD_SETTINGS };

@@ -19,6 +19,184 @@ export interface Movie {
   duration: string;
   createdAt: string;
   updatedAt: string;
+  tmdbId?: number;
+  originalTitle?: string;
+  posterPath?: string | null;
+  backdropPath?: string | null;
+  releaseDate?: string;
+  runtime?: number;
+  trailerUrl?: string;
+  manualPlaybackOverride?: boolean;
+}
+
+export type StreamStatus =
+  | 'available'
+  | 'unavailable'
+  | 'uncertain'
+  | 'failed'
+  | 'disabled';
+
+export type MatchConfidence =
+  | 'exact_tmdb_id'
+  | 'exact_imdb_id'
+  | 'exact_original_title_year'
+  | 'exact_localized_title_year'
+  | 'normalized_title_year'
+  | 'alternative_title_year'
+  | 'uncertain'
+  | 'none';
+
+export type StreamingProviderKey = 'nexstream' | 'vidsrc';
+
+export interface ProviderStreamSummary {
+  providerName: string;
+  providerKey: StreamingProviderKey;
+  streamStatus: StreamStatus;
+  availabilityStatus?: StreamStatus;
+  matchConfidence: MatchConfidence;
+  disabled?: boolean;
+  selectedByAdmin?: boolean;
+  lastCheckedAt?: string;
+  lastError?: string;
+  playerPath?: string | null;
+}
+
+export interface NexStreamPublicInfo {
+  hasStream?: boolean;
+  hasNexStream: boolean;
+  streamStatus: StreamStatus;
+  playerPath: string | null;
+  matchedTitle: string | null;
+  matchConfidence: MatchConfidence;
+  lastCheckedAt?: string;
+  providerName?: string | null;
+  providerKey?: StreamingProviderKey | null;
+  providers?: ProviderStreamSummary[];
+}
+
+/** Alias used by newer multi-provider responses */
+export type StreamPublicInfo = NexStreamPublicInfo;
+
+export interface StreamAssociation {
+  id: string;
+  movieId?: string;
+  tmdbId: number;
+  imdbId?: string;
+  providerName: StreamingProviderKey | string;
+  providerMovieId?: string;
+  nexstreamProviderId?: string;
+  matchedTitle?: string;
+  matchedReleaseYear?: number;
+  playbackReference: string;
+  playbackType: 'embed' | 'hls' | 'dash' | 'mp4' | 'unknown';
+  availabilityStatus?: StreamStatus;
+  streamStatus: StreamStatus;
+  matchConfidence: MatchConfidence;
+  matchSource: 'automatic' | 'manual';
+  manualOverride: boolean;
+  selectedByAdmin?: boolean;
+  disabled?: boolean;
+  lastCheckedAt?: string;
+  lastSyncedAt?: string;
+  lastError?: string;
+  providerMeta?: { title?: string; poster?: string } | null;
+  mediaType?: 'movie' | 'tv';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StreamingAdminStats {
+  totalTmdbMovies: number;
+  totalAssociations: number;
+  withVerifiedStreams: number;
+  withoutStreams: number;
+  uncertainMatches: number;
+  failedSearches: number;
+  nexstreamMatched?: number;
+  vidsrcMatched?: number;
+  bothProviders?: number;
+  providerErrors?: number;
+  lastSyncAt: string | null;
+  lastSyncSummary?: {
+    processed: number;
+    available: number;
+    unavailable: number;
+    uncertain: number;
+    failed: number;
+    skipped: number;
+    nexstreamMatched?: number;
+    vidsrcMatched?: number;
+    bothProviders?: number;
+  } | null;
+}
+
+export interface TmdbDiscoveryItem {
+  tmdbId: number;
+  mediaType: 'movie' | 'tv';
+  title: string;
+  originalTitle?: string;
+  overview: string;
+  posterPath?: string | null;
+  backdropPath?: string | null;
+  posterUrl?: string;
+  backdropUrl?: string;
+  releaseDate?: string;
+  releaseYear?: number;
+  rating: number;
+  language: string;
+  genreIds?: number[];
+  /** Local catalog match (has playback) when imported */
+  localMovieId?: string;
+  hasPlayback?: boolean;
+  nexStream?: NexStreamPublicInfo;
+}
+
+export interface TmdbPersonCredit {
+  id: number;
+  name: string;
+  character?: string;
+  job?: string;
+  profileUrl?: string;
+}
+
+export interface TmdbCompanyInfo {
+  id: number;
+  name: string;
+  logoUrl?: string;
+}
+
+export interface TmdbMovieFullDetails {
+  tmdbId: number;
+  imdbId?: string;
+  title: string;
+  originalTitle?: string;
+  overview: string;
+  description: string;
+  posterPath?: string | null;
+  backdropPath?: string | null;
+  posterUrl?: string;
+  backdropUrl?: string;
+  releaseDate?: string;
+  releaseYear: number;
+  rating: number;
+  genres: string[];
+  genre: string[];
+  category: string;
+  runtime?: number;
+  duration: string;
+  language: string;
+  originalLanguage?: string;
+  trailerUrl?: string;
+  trailerKey?: string;
+  cast: TmdbPersonCredit[];
+  crew: TmdbPersonCredit[];
+  productionCompanies: TmdbCompanyInfo[];
+  similar: TmdbDiscoveryItem[];
+  recommendations: TmdbDiscoveryItem[];
+  localMovie?: Movie | null;
+  hasPlayback?: boolean;
+  nexStream?: NexStreamPublicInfo;
+  stream?: StreamPublicInfo;
 }
 
 export interface Category {
@@ -111,6 +289,10 @@ export interface AdSettings {
   popupNetwork: AdNetwork;
   popupCode: string;
   popupTargetUrl: string;
+  /** Sometimes first movie-card click opens ad; next click goes to details */
+  cardClickAdEnabled: boolean;
+  /** Probability (0–100) that a first click opens an ad tab */
+  cardClickAdChancePercent: number;
   homeAdsEnabled: boolean;
   detailsAdsEnabled: boolean;
   playerAdsEnabled: boolean;

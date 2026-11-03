@@ -5,15 +5,18 @@ import {
   Layers,
   RotateCcw
 } from 'lucide-react';
-import { AnimatePresence } from 'motion/react';
-import { Movie, Category, AdminUser, FilterState, AdSlot, AdSettings } from './types.ts';
+import { Movie, Category, AdminUser, FilterState, AdSlot, AdSettings, TmdbDiscoveryItem } from './types.ts';
 import { api, authStorage } from './services/api.ts';
 import { Navbar } from './components/Navbar.tsx';
 import { HeroBanner } from './components/HeroBanner.tsx';
 import { MovieRow } from './components/MovieRow.tsx';
-import { MovieCard } from './components/MovieCard.tsx';
 import { FilterBar } from './components/FilterBar.tsx';
-import { MovieDetailsModal } from './components/MovieDetailsModal.tsx';
+import { MovieDetailsPage } from './components/MovieDetailsPage.tsx';
+import { TmdbDiscoveryRow } from './components/TmdbDiscoveryRow.tsx';
+import { TmdbMovieCard } from './components/TmdbMovieCard.tsx';
+import { TmdbBrowseGrid, TmdbBrowseSection } from './components/TmdbBrowseGrid.tsx';
+import { TmdbDetailsPage } from './components/TmdbDetailsPage.tsx';
+import { TmdbAttribution } from './components/TmdbAttribution.tsx';
 import { VideoPlayer } from './components/VideoPlayer.tsx';
 import { AdminLoginPage } from './components/Admin/AdminLoginPage.tsx';
 import { AdminDashboard } from './components/Admin/AdminDashboard.tsx';
@@ -22,6 +25,13 @@ import { SidebarAds } from './components/Ads/SidebarAds.tsx';
 import { PopupAdManager } from './components/Ads/PopupAdManager.tsx';
 import { Reveal, Stagger, StaggerItem } from './components/motion/Reveal.tsx';
 import { PageTransition } from './components/motion/PageTransition.tsx';
+import { tryCardClickAd, openOwnerAdOnce, hasDirectStreamUrl } from './utils/cardClickAdGate.ts';
+import {
+  buildTmdbMoviePath,
+  buildLocalMoviePath,
+  parseDetailsRoute
+} from './utils/slug.ts';
+import { BottomAdsRow } from './components/Ads/BottomAdsRow.tsx';
 
 function isAdminPath(pathname: string = window.location.pathname) {
   return pathname === '/admin' || pathname.startsWith('/admin/');
@@ -38,25 +48,39 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState('home');
   const [pathname, setPathname] = useState(window.location.pathname);
   const [activePlaybackMovie, setActivePlaybackMovie] = useState<Movie | null>(null);
-  const [detailsMovie, setDetailsMovie] = useState<Movie | null>(null);
+  const detailsRoute = parseDetailsRoute(pathname);
+  const detailsMovieId = detailsRoute?.kind === 'local' ? detailsRoute.movieId : null;
+  const tmdbDetailsId = detailsRoute?.kind === 'tmdb' ? detailsRoute.tmdbId : null;
 
   // Admin Auth State
   const [adminUser, setAdminUser] = useState<AdminUser | null>(authStorage.getUser());
   const [adminAuthChecked, setAdminAuthChecked] = useState(!authStorage.getToken());
   const onAdminRoute = isAdminPath(pathname);
 
-  // Movie Data States
-  const [heroMovie, setHeroMovie] = useState<Movie | null>(null);
-  const [trendingMovies, setTrendingMovies] = useState<Movie[]>([]);
-  const [popularMovies, setPopularMovies] = useState<Movie[]>([]);
-  const [latestMovies, setLatestMovies] = useState<Movie[]>([]);
+  // Local catalog (admin-imported only — no demo seed)
   const [allMovies, setAllMovies] = useState<Movie[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Advertising Monetization States
   const [adSlots, setAdSlots] = useState<AdSlot[]>([]);
   const [adSettings, setAdSettings] = useState<AdSettings | null>(null);
+
+  // TMDB discovery (metadata catalog — playback only when imported locally)
+  const [tmdbConfigured, setTmdbConfigured] = useState(false);
+  const [tmdbLoading, setTmdbLoading] = useState(false);
+  const [tmdbError, setTmdbError] = useState<string | null>(null);
+  const [tmdbSectionErrors, setTmdbSectionErrors] = useState<Record<string, string>>({});
+  const [tmdbTrending, setTmdbTrending] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbHollywood, setTmdbHollywood] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbBollywood, setTmdbBollywood] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbSouthIndian, setTmdbSouthIndian] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbBengali, setTmdbBengali] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbPopular, setTmdbPopular] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbTopRated, setTmdbTopRated] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbNowPlaying, setTmdbNowPlaying] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbUpcoming, setTmdbUpcoming] = useState<TmdbDiscoveryItem[]>([]);
+  const [tmdbPopularTv, setTmdbPopularTv] = useState<TmdbDiscoveryItem[]>([]);
+  const [browseSection, setBrowseSection] = useState<TmdbBrowseSection | null>(null);
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,35 +118,104 @@ export default function App() {
       .finally(() => setAdminAuthChecked(true));
   }, []);
 
-  // Fetch all public movie and advertising data
+  // Fetch local catalog + ads (playback library only; discovery is TMDB)
   const loadData = async () => {
     try {
-      setLoading(true);
-      const [featuredRes, moviesRes, categoriesRes, adsRes] = await Promise.all([
-        api.getFeatured(),
+      const [moviesRes, categoriesRes, adsRes] = await Promise.all([
         api.getMovies(),
         api.getCategories(),
         api.getAds()
       ]);
 
-      setHeroMovie(featuredRes.hero);
-      setTrendingMovies(featuredRes.trending);
-      setPopularMovies(featuredRes.popular);
-      setLatestMovies(featuredRes.latest);
       setAllMovies(moviesRes.movies);
       setCategories(categoriesRes.categories);
       setAdSlots(adsRes.slots || []);
       setAdSettings(adsRes.settings);
     } catch (err) {
       console.error('Failed to load catalog and advertising data:', err);
+    }
+  };
+
+  const loadTmdbDiscovery = async () => {
+    try {
+      setTmdbLoading(true);
+      setTmdbError(null);
+      const status = await api.getTmdbStatus();
+      setTmdbConfigured(status.configured);
+      if (!status.configured) {
+        setTmdbError(
+          'TMDB is not configured on the server. Set TMDB_ACCESS_TOKEN or TMDB_API_KEY in the environment and restart the server.'
+        );
+        return;
+      }
+
+      const disc = await api.getTmdbDiscover(1);
+      // Guard against a stale Express process that still serves the pre-industry
+      // discover payload (Vite HMR updates the UI without restarting the API).
+      const industryKeys = ['hollywood', 'bollywood', 'southIndian', 'bengali'] as const;
+      const missingIndustry = industryKeys.filter(key => !(key in disc));
+      if (missingIndustry.length > 0) {
+        setTmdbError(
+          'TMDB API is outdated on the server. Restart `npm run dev` / the Node process so industry sections (Hollywood, Bollywood, South Indian, Bengali) can load.'
+        );
+      }
+
+      setTmdbTrending(disc.trending || []);
+      setTmdbHollywood(disc.hollywood || []);
+      setTmdbBollywood(disc.bollywood || []);
+      setTmdbSouthIndian(disc.southIndian || []);
+      setTmdbBengali(disc.bengali || []);
+      setTmdbPopular(disc.popular || []);
+      setTmdbTopRated(disc.topRated || []);
+      setTmdbNowPlaying(disc.nowPlaying || []);
+      setTmdbUpcoming(disc.upcoming || []);
+      setTmdbPopularTv(disc.popularTv || []);
+      setTmdbSectionErrors(disc.sectionErrors || {});
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load TMDB discovery';
+      console.error('TMDB discovery unavailable:', err);
+      setTmdbError(message);
+      setTmdbConfigured(false);
     } finally {
-      setLoading(false);
+      setTmdbLoading(false);
     }
   };
 
   useEffect(() => {
     loadData();
+    loadTmdbDiscovery();
   }, []);
+
+  const handleOpenTmdbDetails = (item: TmdbDiscoveryItem) => {
+    if (item.mediaType === 'tv') {
+      // TV shows are browse/metadata only in this catalog
+      window.open(`https://www.themoviedb.org/tv/${item.tmdbId}`, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    // If this title already has an owner direct link, skip chance card-ads (ad runs on Play)
+    const local = item.localMovieId
+      ? allMovies.find(m => m.id === item.localMovieId)
+      : allMovies.find(m => m.tmdbId === item.tmdbId);
+    if (!hasDirectStreamUrl(local)) {
+      if (tryCardClickAd(`tmdb-${item.tmdbId}`, adSettings, adSlots)) {
+        return;
+      }
+    }
+
+    navigateTo(buildTmdbMoviePath(item.title, item.tmdbId));
+  };
+
+  const handlePlayTmdbItem = (item: TmdbDiscoveryItem) => {
+    if (item.localMovieId) {
+      const local = allMovies.find(m => m.id === item.localMovieId);
+      if (local && hasDirectStreamUrl(local)) {
+        handlePlayMovie(local);
+        return;
+      }
+    }
+    handleOpenTmdbDetails(item);
+  };
 
   // Filter change handlers
   const handleFilterChange = (key: keyof FilterState, value: string) => {
@@ -151,70 +244,194 @@ export default function App() {
     return count;
   }, [filters]);
 
-  // Movies matching active search & filters
-  const filteredMovies = useMemo(() => {
-    return allMovies.filter(movie => {
-      // Search query
+  // Deduped TMDB catalog for search / tab views
+  const allTmdbItems = useMemo(() => {
+    const map = new Map<number, TmdbDiscoveryItem>();
+    for (const item of [
+      ...tmdbTrending,
+      ...tmdbHollywood,
+      ...tmdbBollywood,
+      ...tmdbSouthIndian,
+      ...tmdbBengali,
+      ...tmdbPopular,
+      ...tmdbTopRated,
+      ...tmdbNowPlaying,
+      ...tmdbUpcoming,
+      ...tmdbPopularTv
+    ]) {
+      map.set(item.tmdbId, item);
+    }
+    return Array.from(map.values());
+  }, [
+    tmdbTrending,
+    tmdbHollywood,
+    tmdbBollywood,
+    tmdbSouthIndian,
+    tmdbBengali,
+    tmdbPopular,
+    tmdbTopRated,
+    tmdbNowPlaying,
+    tmdbUpcoming,
+    tmdbPopularTv
+  ]);
+
+  const browseMeta: Record<TmdbBrowseSection, { title: string; subtitle: string }> = {
+    trending: {
+      title: 'Trending Movies',
+      subtitle: 'What the world is watching this week on TMDB'
+    },
+    hollywood: {
+      title: 'Popular Hollywood Movies',
+      subtitle: 'English original-language films sorted by popularity'
+    },
+    bollywood: {
+      title: 'Bollywood Movies',
+      subtitle: 'Hindi (hi) original-language films from TMDB Discover'
+    },
+    'south-indian': {
+      title: 'South Indian Movies',
+      subtitle: 'Tamil, Telugu, Malayalam & Kannada (ta, te, ml, kn)'
+    },
+    bengali: {
+      title: 'Bengali Movies',
+      subtitle: 'Bengali (bn) original-language films from TMDB Discover'
+    },
+    'top-rated': {
+      title: 'Top Rated Movies',
+      subtitle: 'Highest-rated films on The Movie Database'
+    },
+    upcoming: {
+      title: 'Upcoming Movies',
+      subtitle: 'Coming soon to theaters worldwide'
+    },
+    popular: {
+      title: 'Popular Movies',
+      subtitle: 'Worldwide popular titles on TMDB'
+    },
+    'now-playing': {
+      title: 'Now Playing',
+      subtitle: 'Currently in cinemas'
+    },
+    'tv-popular': {
+      title: 'Popular TV Shows',
+      subtitle: 'Browse-only metadata from TMDB'
+    }
+  };
+
+  const openBrowse = (section: TmdbBrowseSection) => {
+    setBrowseSection(section);
+    if (section === 'trending') setCurrentTab('trending');
+    else if (section === 'hollywood') setCurrentTab('movies');
+    else if (section === 'upcoming') setCurrentTab('latest');
+    else setCurrentTab('home');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const closeBrowse = () => {
+    setBrowseSection(null);
+    setCurrentTab('home');
+  };
+
+  const filteredTmdbItems = useMemo(() => {
+    return allTmdbItems.filter(item => {
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesQuery =
-          movie.title.toLowerCase().includes(q) ||
-          movie.description.toLowerCase().includes(q) ||
-          movie.genre.some(g => g.toLowerCase().includes(q)) ||
-          movie.language.toLowerCase().includes(q) ||
-          movie.releaseYear.toString().includes(q);
+          item.title.toLowerCase().includes(q) ||
+          (item.overview || '').toLowerCase().includes(q) ||
+          item.language.toLowerCase().includes(q) ||
+          String(item.releaseYear || '').includes(q);
         if (!matchesQuery) return false;
       }
 
-      // Genre filter
-      if (filters.genre !== 'All') {
-        const gTerm = filters.genre.toLowerCase();
-        if (!movie.genre.some(g => g.toLowerCase() === gTerm)) return false;
+      if (filters.year !== 'All' && String(item.releaseYear || '') !== filters.year) {
+        return false;
       }
 
-      // Language filter
       if (filters.language !== 'All') {
-        const lTerm = filters.language.toLowerCase();
-        if (!movie.language.toLowerCase().includes(lTerm)) return false;
-      }
-
-      // Quality filter
-      if (filters.quality !== 'All') {
-        if (movie.quality.toLowerCase() !== filters.quality.toLowerCase()) return false;
-      }
-
-      // Year filter
-      if (filters.year !== 'All') {
-        if (movie.releaseYear.toString() !== filters.year) return false;
-      }
-
-      // Category filter
-      if (filters.category !== 'All') {
-        if (!movie.category.toLowerCase().includes(filters.category.toLowerCase())) return false;
+        const filterLang = filters.language.toLowerCase();
+        const code = item.language.toUpperCase();
+        if (filterLang.includes('english')) {
+          if (code !== 'EN') return false;
+        } else if (!filterLang.includes(code.toLowerCase())) {
+          return false;
+        }
       }
 
       return true;
     });
-  }, [allMovies, searchQuery, filters]);
+  }, [allTmdbItems, searchQuery, filters.language, filters.year]);
+
+  // Hero auto-slider: up to 8 unique titles (prefer trending, fill from Hollywood)
+  const heroSlidesSource = useMemo(() => {
+    const map = new Map<number, TmdbDiscoveryItem>();
+    for (const item of [...tmdbTrending, ...tmdbHollywood, ...tmdbPopular]) {
+      if (item.mediaType === 'tv') continue;
+      if (!map.has(item.tmdbId)) map.set(item.tmdbId, item);
+      if (map.size >= 8) break;
+    }
+    return Array.from(map.values()).slice(0, 8);
+  }, [tmdbTrending, tmdbHollywood, tmdbPopular]);
+
+  const heroSlides = useMemo(
+    () =>
+      heroSlidesSource.map((item, i) => ({
+        id: `hero-${item.tmdbId}`,
+        title: item.title,
+        description: item.overview || 'Discover this title on The Movie Database.',
+        posterUrl: item.posterUrl,
+        backdropUrl: item.backdropUrl || item.posterUrl,
+        rating: item.rating,
+        releaseYear: item.releaseYear,
+        language: item.language,
+        category: item.mediaType === 'tv' ? 'TV Show' : 'Movie',
+        badge: i === 0 ? 'Trending on TMDB' : 'Featured',
+        canPlay: Boolean(item.hasPlayback)
+      })),
+    [heroSlidesSource]
+  );
 
   // Tab switching
   const handleSelectTab = (tab: string) => {
-    setCurrentTab(tab);
+    setBrowseSection(null);
     if (tab === 'trending') {
-      handleFilterChange('genre', 'All');
-    } else if (tab === 'latest') {
-      handleFilterChange('year', '2026');
+      setCurrentTab('trending');
+      return;
     }
+    if (tab === 'movies') {
+      openBrowse('hollywood');
+      return;
+    }
+    if (tab === 'latest') {
+      openBrowse('upcoming');
+      return;
+    }
+    setCurrentTab(tab);
   };
 
   // Playback & Details triggers
   const handlePlayMovie = (movie: Movie) => {
+    // Direct-link titles: open owner's ad once in a new tab, then play the link
+    if (hasDirectStreamUrl(movie)) {
+      openOwnerAdOnce(`direct-play-${movie.id}`, adSettings, adSlots);
+      setActivePlaybackMovie(movie);
+      return;
+    }
     setActivePlaybackMovie(movie);
-    setDetailsMovie(null);
   };
 
   const handleOpenDetails = (movie: Movie) => {
-    setDetailsMovie(movie);
+    // Direct-link movies skip chance card-ads; their ad fires once on Play instead
+    if (!hasDirectStreamUrl(movie)) {
+      if (tryCardClickAd(`movie-${movie.id}`, adSettings, adSlots)) {
+        return;
+      }
+    }
+    if (movie.tmdbId) {
+      navigateTo(buildTmdbMoviePath(movie.title, movie.tmdbId));
+      return;
+    }
+    navigateTo(buildLocalMoviePath(movie.title, movie.id));
   };
 
   const goHome = useCallback(() => {
@@ -274,6 +491,54 @@ export default function App() {
     );
   }
 
+  // Dedicated movie / TMDB details pages (full page with ad placements)
+  if (detailsMovieId || tmdbDetailsId !== null) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-white font-sans selection:bg-red-600 selection:text-white">
+        <Navbar
+          currentTab={currentTab}
+          onSelectTab={tab => {
+            goHome();
+            handleSelectTab(tab);
+          }}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          isFilterOpen={false}
+          onToggleFilter={() => {
+            goHome();
+            setIsFilterOpen(true);
+          }}
+          activeFilterCount={activeFilterCount}
+        />
+        <main className="pt-16 sm:pt-20">
+          {detailsMovieId && (
+            <MovieDetailsPage
+              key={detailsMovieId}
+              movieId={detailsMovieId}
+              onBack={goHome}
+              onPlay={handlePlayMovie}
+              onSelectMovie={handleOpenDetails}
+              adSlots={adSlots}
+              adSettings={adSettings || undefined}
+            />
+          )}
+          {tmdbDetailsId !== null && (
+            <TmdbDetailsPage
+              key={`tmdb-${tmdbDetailsId}`}
+              tmdbId={tmdbDetailsId}
+              onBack={goHome}
+              onPlayLocal={handlePlayMovie}
+              onSelectTmdb={handleOpenTmdbDetails}
+              adSlots={adSlots}
+              adSettings={adSettings || undefined}
+            />
+          )}
+        </main>
+        {adSettings && <PopupAdManager slots={adSlots} settings={adSettings} />}
+      </div>
+    );
+  }
+
   const isBrowsingWithFilters = searchQuery.trim().length > 0 || activeFilterCount > 0;
   const showHomepageAds = Boolean(adSettings?.masterEnabled && adSettings?.homeAdsEnabled);
 
@@ -307,7 +572,7 @@ export default function App() {
           onChangeFilter={handleFilterChange}
           onResetFilters={handleResetFilters}
           categories={categories}
-          totalResults={filteredMovies.length}
+          totalResults={filteredTmdbItems.length}
           isOpen={isFilterOpen}
           onClose={() => setIsFilterOpen(false)}
         />
@@ -316,11 +581,21 @@ export default function App() {
           viewKey={
             isBrowsingWithFilters
               ? `filter-${searchQuery}-${activeFilterCount}`
-              : currentTab
+              : browseSection
+                ? `browse-${browseSection}`
+                : currentTab
           }
         >
-          {/* When active filter or search is applied, show Grid View */}
-          {isBrowsingWithFilters ? (
+          {browseSection && !isBrowsingWithFilters ? (
+            <TmdbBrowseGrid
+              section={browseSection}
+              title={browseMeta[browseSection].title}
+              subtitle={browseMeta[browseSection].subtitle}
+              onBack={closeBrowse}
+              onDetails={handleOpenTmdbDetails}
+              onPlay={handlePlayTmdbItem}
+            />
+          ) : isBrowsingWithFilters ? (
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
               <Reveal variant="fade-up">
                 <div className="flex items-center justify-between pb-4 border-b border-neutral-800">
@@ -332,8 +607,8 @@ export default function App() {
                       </span>
                     </h1>
                     <p className="text-xs text-neutral-400 mt-1">
-                      Showing {filteredMovies.length}{' '}
-                      {filteredMovies.length === 1 ? 'movie' : 'movies'}
+                      Showing {filteredTmdbItems.length}{' '}
+                      {filteredTmdbItems.length === 1 ? 'title' : 'titles'} from TMDB
                     </p>
                   </div>
 
@@ -347,15 +622,14 @@ export default function App() {
                 </div>
               </Reveal>
 
-              {filteredMovies.length === 0 ? (
+              {filteredTmdbItems.length === 0 ? (
                 <Reveal variant="scale-in" className="py-20 text-center space-y-4">
                   <div className="w-16 h-16 rounded-2xl bg-neutral-900 border border-neutral-800 text-neutral-500 mx-auto flex items-center justify-center">
                     <Film className="w-8 h-8" />
                   </div>
-                  <h3 className="text-lg font-bold text-white">No Movies Match Your Criteria</h3>
+                  <h3 className="text-lg font-bold text-white">No Titles Match Your Criteria</h3>
                   <p className="text-sm text-neutral-400 max-w-md mx-auto">
-                    Try adjusting your search terms, removing genre or audio filters, or explore our
-                    curated categories below.
+                    Try adjusting your search terms or year filter, then browse TMDB sections on Home.
                   </p>
                   <button
                     onClick={handleResetFilters}
@@ -369,12 +643,12 @@ export default function App() {
                   className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6"
                   stagger={0.045}
                 >
-                  {filteredMovies.map(movie => (
-                    <StaggerItem key={movie.id} variant="scale-in">
-                      <MovieCard
-                        movie={movie}
-                        onPlay={handlePlayMovie}
-                        onDetails={handleOpenDetails}
+                  {filteredTmdbItems.map(item => (
+                    <StaggerItem key={`${item.mediaType}-${item.tmdbId}`} variant="scale-in">
+                      <TmdbMovieCard
+                        item={item}
+                        onDetails={handleOpenTmdbDetails}
+                        onPlay={handlePlayTmdbItem}
                       />
                     </StaggerItem>
                   ))}
@@ -382,26 +656,38 @@ export default function App() {
               )}
             </div>
           ) : (
-            /* Standard Curated Views */
             <>
               {currentTab === 'home' && (
                 <HeroBanner
-                  movie={heroMovie}
-                  onPlay={handlePlayMovie}
-                  onDetails={handleOpenDetails}
+                  slides={heroSlides}
+                  loading={tmdbLoading && heroSlides.length === 0}
+                  onPlay={slide => {
+                    const item = heroSlidesSource.find(s => `hero-${s.tmdbId}` === slide.id);
+                    if (item) handlePlayTmdbItem(item);
+                  }}
+                  onDetails={slide => {
+                    const item = heroSlidesSource.find(s => `hero-${s.tmdbId}` === slide.id);
+                    if (item) handleOpenTmdbDetails(item);
+                  }}
                 />
               )}
 
-              {(currentTab === 'home' || currentTab === 'trending') && (
-                <MovieRow
-                  title="Trending Movies Right Now"
-                  subtitle="Top watched blockbuster films streaming today"
-                  movies={trendingMovies.length > 0 ? trendingMovies : allMovies.slice(0, 5)}
-                  onPlay={handlePlayMovie}
-                  onDetails={handleOpenDetails}
-                  showRanking={true}
-                  inFeedAdSlot={showHomepageAds ? inFeedAd : undefined}
-                />
+              {tmdbError && !tmdbLoading && (currentTab === 'home' || currentTab === 'trending' || currentTab === 'movies' || currentTab === 'latest') && (
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 my-6">
+                  <div className="rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-sm text-red-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <p>
+                      <span className="font-semibold text-red-100">TMDB unavailable: </span>
+                      {tmdbError}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => loadTmdbDiscovery()}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
               )}
 
               {showHomepageAds && adSettings && currentTab === 'home' && (
@@ -415,44 +701,117 @@ export default function App() {
                 </Reveal>
               )}
 
-              {(currentTab === 'home' || currentTab === 'latest') && (
+              {/* Optional local library after admin TMDB import */}
+              {currentTab === 'home' && allMovies.length > 0 && (
                 <MovieRow
-                  title="Latest 2026 Cinema Releases"
-                  subtitle="Fresh additions in 1080p and 4K Ultra HD"
-                  movies={latestMovies.length > 0 ? latestMovies : allMovies}
+                  title="Your Library"
+                  subtitle="Titles imported for streaming playback"
+                  movies={allMovies}
                   onPlay={handlePlayMovie}
                   onDetails={handleOpenDetails}
+                  inFeedAdSlot={showHomepageAds ? inFeedAd : undefined}
                 />
               )}
 
-              {(currentTab === 'home' || currentTab === 'movies') && (
-                <MovieRow
-                  title="Popular & Critically Acclaimed"
-                  subtitle="High-rating cinematic masterpieces"
-                  movies={popularMovies.length > 0 ? popularMovies : allMovies}
-                  onPlay={handlePlayMovie}
-                  onDetails={handleOpenDetails}
+              {/* Industry & language catalog sections (original_language filters) */}
+              {(currentTab === 'home' || currentTab === 'trending') && (tmdbConfigured || tmdbLoading) && (
+                <TmdbDiscoveryRow
+                  title="Trending Movies"
+                  subtitle="Live weekly trends from The Movie Database"
+                  items={tmdbTrending}
+                  loading={tmdbLoading && tmdbTrending.length === 0}
+                  error={tmdbSectionErrors.trending}
+                  showEmpty
+                  onDetails={handleOpenTmdbDetails}
+                  onPlay={handlePlayTmdbItem}
+                  onViewAll={() => openBrowse('trending')}
                 />
               )}
 
-              {currentTab === 'home' && (
-                <MovieRow
-                  title="Action & High-Stakes Thrills"
-                  subtitle="Intense showdowns and gripping adrenaline"
-                  movies={allMovies.filter(m => m.genre.includes('Action'))}
-                  onPlay={handlePlayMovie}
-                  onDetails={handleOpenDetails}
-                />
-              )}
+              {currentTab === 'home' && (tmdbConfigured || tmdbLoading) && (
+                <>
+                  <TmdbDiscoveryRow
+                    title="Popular Hollywood Movies"
+                    subtitle="English (en) · TMDB Discover by original language"
+                    items={tmdbHollywood}
+                    loading={tmdbLoading && tmdbHollywood.length === 0}
+                    error={tmdbSectionErrors.hollywood}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('hollywood')}
+                  />
 
-              {currentTab === 'home' && (
-                <MovieRow
-                  title="Sci-Fi & Futuristic Odyssey"
-                  subtitle="Interstellar missions, cyber realms, and cosmic explorations"
-                  movies={allMovies.filter(m => m.genre.includes('Sci-Fi'))}
-                  onPlay={handlePlayMovie}
-                  onDetails={handleOpenDetails}
-                />
+                  <TmdbDiscoveryRow
+                    title="Bollywood Movies"
+                    subtitle="Hindi (hi) · TMDB Discover by original language"
+                    items={tmdbBollywood}
+                    loading={tmdbLoading && tmdbBollywood.length === 0}
+                    error={tmdbSectionErrors.bollywood}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('bollywood')}
+                  />
+
+                  <TmdbDiscoveryRow
+                    title="South Indian Movies"
+                    subtitle="Tamil, Telugu, Malayalam & Kannada (ta, te, ml, kn)"
+                    items={tmdbSouthIndian}
+                    loading={tmdbLoading && tmdbSouthIndian.length === 0}
+                    error={tmdbSectionErrors.southIndian}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('south-indian')}
+                  />
+
+                  <TmdbDiscoveryRow
+                    title="Bengali Movies"
+                    subtitle="Bengali (bn) · TMDB Discover by original language"
+                    items={tmdbBengali}
+                    loading={tmdbLoading && tmdbBengali.length === 0}
+                    error={tmdbSectionErrors.bengali}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('bengali')}
+                  />
+
+                  <TmdbDiscoveryRow
+                    title="Top Rated Movies"
+                    subtitle="Highest-rated films on TMDB"
+                    items={tmdbTopRated}
+                    loading={tmdbLoading && tmdbTopRated.length === 0}
+                    error={tmdbSectionErrors.topRated}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('top-rated')}
+                  />
+
+                  <TmdbDiscoveryRow
+                    title="Upcoming Movies"
+                    subtitle="Coming soon to theaters"
+                    items={tmdbUpcoming}
+                    loading={tmdbLoading && tmdbUpcoming.length === 0}
+                    error={tmdbSectionErrors.upcoming}
+                    showEmpty
+                    onDetails={handleOpenTmdbDetails}
+                    onPlay={handlePlayTmdbItem}
+                    onViewAll={() => openBrowse('upcoming')}
+                  />
+
+                  <TmdbDiscoveryRow
+                    title="Popular TV Shows"
+                    subtitle="Browse-only metadata (opens on TMDB)"
+                    items={tmdbPopularTv}
+                    loading={tmdbLoading && tmdbPopularTv.length === 0}
+                    error={tmdbSectionErrors.popularTv}
+                    onDetails={handleOpenTmdbDetails}
+                    onViewAll={() => openBrowse('tv-popular')}
+                  />
+                </>
               )}
 
               {currentTab === 'categories' && (
@@ -471,22 +830,19 @@ export default function App() {
                     className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"
                     stagger={0.07}
                   >
-                    {categories.map(cat => {
-                      const sampleMovie = allMovies.find(
-                        m =>
-                          m.category.toLowerCase().includes(cat.name.toLowerCase()) ||
-                          m.genre.some(g => g.toLowerCase() === cat.name.toLowerCase())
-                      );
+                    {categories.map((cat, index) => {
                       const bgThumb =
-                        sampleMovie?.posterUrl ||
+                        tmdbHollywood[index % Math.max(tmdbHollywood.length, 1)]?.posterUrl ||
+                        tmdbPopular[index % Math.max(tmdbPopular.length, 1)]?.posterUrl ||
+                        tmdbTrending[index % Math.max(tmdbTrending.length, 1)]?.posterUrl ||
                         'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80';
 
                       return (
                         <StaggerItem key={cat.id} variant="slide-soft">
                           <div
                             onClick={() => {
-                              handleFilterChange('genre', cat.name);
-                              setIsFilterOpen(true);
+                              setSearchQuery(cat.name);
+                              setIsFilterOpen(false);
                             }}
                             className="group relative h-48 rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 hover:border-red-500/60 transition-all duration-300 shadow-xl cursor-pointer transform hover:-translate-y-1"
                           >
@@ -501,8 +857,8 @@ export default function App() {
                                 <h3 className="text-xl font-bold text-white group-hover:text-red-400 transition-colors">
                                   {cat.name}
                                 </h3>
-                                <span className="text-xs px-2 py-0.5 rounded-full bg-red-600/30 text-red-300 border border-red-500/40 font-semibold">
-                                  {cat.movieCount || 0} Titles
+                                <span className="text-xs px-2 py-0.5 rounded-full bg-sky-600/30 text-sky-300 border border-sky-500/40 font-semibold">
+                                  TMDB
                                 </span>
                               </div>
                               <p className="text-xs text-neutral-300 mt-1 line-clamp-2">
@@ -521,12 +877,11 @@ export default function App() {
         </PageTransition>
 
         {showHomepageAds && adSettings && (
-          <Reveal variant="fade-up" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-12 flex justify-center">
-            <AdBanner
-              position="home_footer"
+          <Reveal variant="fade-up" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-12">
+            <BottomAdsRow
               slots={adSlots}
               settings={adSettings}
-              className="my-4"
+              positions={['home_footer', 'movie_details_below_related']}
             />
           </Reveal>
         )}
@@ -534,54 +889,43 @@ export default function App() {
 
       <footer className="mt-12 border-t border-neutral-900 bg-neutral-950/80 py-12 px-4 sm:px-6 lg:px-8">
         <Reveal variant="fade-up">
-          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6 text-xs text-neutral-500">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center text-white">
-                <Film className="w-4 h-4" />
+          <div className="max-w-7xl mx-auto flex flex-col gap-8 text-xs text-neutral-500">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center text-white">
+                  <Film className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-bold text-neutral-300">CineStream Cinema</p>
+                  <p>© 2026 CineStream Inc. All streaming rights reserved.</p>
+                </div>
               </div>
-              <div>
-                <p className="font-bold text-neutral-300">CineStream Cinema</p>
-                <p>© 2026 CineStream Inc. All streaming rights reserved.</p>
-              </div>
-            </div>
 
-            <div className="flex items-center gap-6">
-              <button
-                onClick={() => handleSelectTab('home')}
-                className="hover:text-neutral-300 transition-colors cursor-pointer"
-              >
-                Home
-              </button>
-              <button
-                onClick={() => handleSelectTab('trending')}
-                className="hover:text-neutral-300 transition-colors cursor-pointer"
-              >
-                Trending
-              </button>
-              <button
-                onClick={() => handleSelectTab('categories')}
-                className="hover:text-neutral-300 transition-colors cursor-pointer"
-              >
-                Categories
-              </button>
+              <div className="flex items-center gap-6">
+                <button
+                  onClick={() => handleSelectTab('home')}
+                  className="hover:text-neutral-300 transition-colors cursor-pointer"
+                >
+                  Home
+                </button>
+                <button
+                  onClick={() => handleSelectTab('trending')}
+                  className="hover:text-neutral-300 transition-colors cursor-pointer"
+                >
+                  Trending
+                </button>
+                <button
+                  onClick={() => handleSelectTab('categories')}
+                  className="hover:text-neutral-300 transition-colors cursor-pointer"
+                >
+                  Categories
+                </button>
+              </div>
             </div>
+            {(tmdbConfigured || tmdbLoading) && <TmdbAttribution />}
           </div>
         </Reveal>
       </footer>
-
-      <AnimatePresence>
-        {detailsMovie && (
-          <MovieDetailsModal
-            key={detailsMovie.id}
-            movie={detailsMovie}
-            onClose={() => setDetailsMovie(null)}
-            onPlay={handlePlayMovie}
-            onSelectMovie={movie => setDetailsMovie(movie)}
-            adSlots={adSlots}
-            adSettings={adSettings || undefined}
-          />
-        )}
-      </AnimatePresence>
 
       {/* Policy-Compliant Popunder / Popup Manager (Requirement 2) */}
       {adSettings && (

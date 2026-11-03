@@ -20,7 +20,7 @@ import {
 import Hls from 'hls.js';
 import { Movie, AdSlot, AdSettings } from '../types.ts';
 import { api } from '../services/api.ts';
-import { AdBanner } from './Ads/AdBanner.tsx';
+import { BottomAdsRow } from './Ads/BottomAdsRow.tsx';
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -291,20 +291,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       </div>
 
-      {/* Main Container with Optional Player Sidebars */}
+      {/* Main Container with Optional Player Sidebars — no top-of-page ads */}
       <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-        {/* 1. Banner Above Video Player (Requirement 1.D) */}
-        {showAds && (
-          <div className="flex justify-center">
-            <AdBanner
-              position="player_above"
-              slots={adSlots}
-              settings={adSettings!}
-              className="my-1"
-            />
-          </div>
-        )}
-
         {/* Video Player + Sidebars Layout */}
         <div className="flex items-start justify-center gap-4">
           {/* 2. Left Sidebar Beside Player (Requirement 1.D) */}
@@ -512,14 +500,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           )}
         </div>
 
-        {/* 4. Banner Below the Player (Requirement 1.D) */}
-        {showAds && (
-          <div className="flex justify-center pt-2">
-            <AdBanner
-              position="player_below"
+        {/* Large side-by-side ads below the player (never at page top) */}
+        {showAds && adSettings && (
+          <div className="pt-2">
+            <BottomAdsRow
               slots={adSlots}
-              settings={adSettings!}
-              className="my-2"
+              settings={adSettings}
+              positions={['player_below', 'home_footer']}
             />
           </div>
         )}

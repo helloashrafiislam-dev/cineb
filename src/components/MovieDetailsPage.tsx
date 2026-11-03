@@ -1,0 +1,422 @@
+import React, { useEffect, useState } from 'react';
+import {
+  ArrowLeft,
+  Play,
+  Star,
+  Film,
+  Globe,
+  Layers,
+  Eye,
+  ExternalLink
+} from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
+import { Movie, AdSlot, AdSettings, TmdbPersonCredit, TmdbCompanyInfo } from '../types.ts';
+import { api } from '../services/api.ts';
+import { AdBanner } from './Ads/AdBanner.tsx';
+import { BottomAdsRow } from './Ads/BottomAdsRow.tsx';
+import { SidebarAds } from './Ads/SidebarAds.tsx';
+import { Stagger, StaggerItem } from './motion/Reveal.tsx';
+import { TmdbAttribution } from './TmdbAttribution.tsx';
+
+interface LocalTmdbExtras {
+  cast?: TmdbPersonCredit[];
+  crew?: TmdbPersonCredit[];
+  productionCompanies?: TmdbCompanyInfo[];
+  trailerUrl?: string;
+  trailerKey?: string;
+  originalTitle?: string;
+  runtime?: number;
+}
+
+interface MovieDetailsPageProps {
+  movieId: string;
+  onBack: () => void;
+  onPlay: (movie: Movie) => void;
+  onSelectMovie: (movie: Movie) => void;
+  adSlots?: AdSlot[];
+  adSettings?: AdSettings;
+}
+
+export const MovieDetailsPage: React.FC<MovieDetailsPageProps> = ({
+  movieId,
+  onBack,
+  onPlay,
+  onSelectMovie,
+  adSlots = [],
+  adSettings
+}) => {
+  const [movie, setMovie] = useState<Movie | null>(null);
+  const [relatedMovies, setRelatedMovies] = useState<Movie[]>([]);
+  const [tmdbExtras, setTmdbExtras] = useState<LocalTmdbExtras | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const reduced = useReducedMotion();
+  const ease = [0.22, 1, 0.36, 1] as const;
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    let alive = true;
+    setLoading(true);
+    setError(null);
+
+    api
+      .getMovieById(movieId)
+      .then(data => {
+        if (!alive) return;
+        setMovie(data.movie);
+        setRelatedMovies(data.related || []);
+        setTmdbExtras((data.tmdbExtras as LocalTmdbExtras) || null);
+        if (data.movie?.title) {
+          document.title = `${data.movie.title} (${data.movie.releaseYear}) | CineStream`;
+          const descMeta = document.querySelector('meta[name="description"]');
+          if (descMeta && data.movie.description) {
+            descMeta.setAttribute('content', data.movie.description.slice(0, 160));
+          }
+        }
+      })
+      .catch(err => {
+        if (alive) setError(err.message || 'Failed to load movie details');
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+
+    return () => {
+      alive = false;
+      document.title = 'CineStream - Modern Movie Streaming & Admin Platform';
+    };
+  }, [movieId]);
+
+  const showAds = Boolean(adSettings?.masterEnabled && adSettings?.detailsAdsEnabled);
+
+  if (loading) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center text-neutral-400 text-sm">
+        Loading movie details…
+      </div>
+    );
+  }
+
+  if (error || !movie) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-20 text-center space-y-4">
+        <p className="text-red-300 text-sm">{error || 'Movie not found'}</p>
+        <button
+          onClick={onBack}
+          className="px-4 py-2 rounded-lg bg-neutral-800 text-white text-xs cursor-pointer"
+        >
+          Back to Home
+        </button>
+      </div>
+    );
+  }
+
+  const bgImage = movie.backdropUrl || movie.posterUrl;
+  const isMkv = movie.streamingUrl?.toLowerCase().includes('.mkv');
+  const isHls = movie.streamingUrl?.toLowerCase().includes('.m3u8');
+
+  return (
+    <div className="relative pb-16">
+      {showAds && adSettings && <SidebarAds slots={adSlots} settings={adSettings} />}
+
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-2 text-sm text-neutral-300 hover:text-white mb-4 cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back
+        </button>
+      </div>
+
+      <motion.div
+        className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8"
+        initial={reduced ? { opacity: 0 } : { opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease }}
+      >
+        <div className="relative w-full h-72 sm:h-[420px] rounded-3xl overflow-hidden border border-neutral-800 bg-neutral-900">
+          <img
+            src={bgImage}
+            alt={movie.title}
+            className="w-full h-full object-cover object-center filter brightness-90"
+            onError={e => {
+              (e.target as HTMLImageElement).src =
+                'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80';
+            }}
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/50 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/80 via-neutral-950/30 to-transparent" />
+
+          <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between flex-wrap gap-4">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2.5 py-0.5 rounded-md bg-red-600 text-white text-xs font-bold uppercase tracking-wider">
+                  {movie.quality}
+                </span>
+                <span className="px-2.5 py-0.5 rounded-md bg-black/70 backdrop-blur-sm border border-amber-500/40 text-amber-400 text-xs font-bold flex items-center gap-1">
+                  <Star className="w-3.5 h-3.5 fill-amber-400" />
+                  {movie.rating.toFixed(1)} / 10
+                </span>
+                <span className="text-xs text-neutral-300 font-medium">{movie.releaseYear}</span>
+                <span className="text-xs text-neutral-400">• {movie.duration}</span>
+              </div>
+              <h1 className="text-3xl sm:text-5xl font-black text-white tracking-tight">
+                {movie.title}
+              </h1>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3">
+              {showAds && adSettings && (
+                <div className="hidden lg:block max-w-[280px]">
+                  <AdBanner
+                    position="movie_details_before_watch"
+                    slots={adSlots}
+                    settings={adSettings}
+                    className="my-0 scale-90"
+                  />
+                </div>
+              )}
+              <button
+                onClick={() => onPlay(movie)}
+                className="flex items-center gap-2.5 px-6 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm sm:text-base shadow-xl shadow-red-950 cursor-pointer"
+              >
+                <Play className="w-5 h-5 fill-white" />
+                Watch Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="md:col-span-2 space-y-6">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-400 mb-2">
+                  Storyline & Synopsis
+                </h2>
+                <p className="text-neutral-300 text-sm sm:text-base leading-relaxed">
+                  {movie.description}
+                </p>
+              </div>
+
+              {showAds && adSettings && (
+                <AdBanner
+                  position="movie_details_mid"
+                  slots={adSlots}
+                  settings={adSettings}
+                  className="my-3"
+                />
+              )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
+                  <div className="flex items-center gap-1.5 text-xs text-neutral-400 mb-1">
+                    <Globe className="w-3.5 h-3.5 text-red-400" />
+                    Language
+                  </div>
+                  <div className="text-white text-sm font-semibold truncate">{movie.language}</div>
+                </div>
+                <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
+                  <div className="flex items-center gap-1.5 text-xs text-neutral-400 mb-1">
+                    <Layers className="w-3.5 h-3.5 text-red-400" />
+                    Quality
+                  </div>
+                  <div className="text-white text-sm font-semibold">{movie.quality} Ultra HD</div>
+                </div>
+                <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800">
+                  <div className="flex items-center gap-1.5 text-xs text-neutral-400 mb-1">
+                    <Eye className="w-3.5 h-3.5 text-red-400" />
+                    Total Views
+                  </div>
+                  <div className="text-white text-sm font-semibold">
+                    {movie.views.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 text-xs text-neutral-400 space-y-1.5">
+                <div className="flex items-center justify-between text-neutral-300 font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    <Film className="w-4 h-4 text-red-500" />
+                    Streaming Source Information
+                  </span>
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-neutral-800 border border-neutral-700">
+                    {isMkv ? 'MKV Container' : isHls ? 'HLS (.m3u8)' : 'Direct Video'}
+                  </span>
+                </div>
+                <p className="truncate font-mono text-[11px]">{movie.streamingUrl}</p>
+                <a
+                  href={movie.streamingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-red-400 hover:text-red-300 font-semibold underline"
+                >
+                  Open direct stream link
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="aspect-[2/3] rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 shadow-xl max-w-[220px] mx-auto md:max-w-none">
+                <img
+                  src={movie.posterUrl}
+                  alt={movie.title}
+                  className="w-full h-full object-cover"
+                  onError={e => {
+                    (e.target as HTMLImageElement).src =
+                      'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80';
+                  }}
+                />
+              </div>
+
+              {showAds && adSettings && (
+                <AdBanner
+                  position="movie_details_below_poster"
+                  slots={adSlots}
+                  settings={adSettings}
+                  className="my-1"
+                />
+              )}
+
+              <div className="space-y-2">
+                <div className="text-xs text-neutral-400">
+                  <span className="text-neutral-500 block mb-1">Genres:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {movie.genre.map(g => (
+                      <span
+                        key={g}
+                        className="px-2 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-xs text-neutral-200"
+                      >
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-xs text-neutral-400 pt-1">
+                  <span className="text-neutral-500 block mb-1">Category:</span>
+                  <span className="text-neutral-200 font-medium">{movie.category}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {(tmdbExtras?.trailerKey || movie.trailerUrl) && (
+            <div className="pt-6 border-t border-neutral-800/80 space-y-3">
+              <h2 className="text-lg font-bold text-white">Official Trailer</h2>
+              {tmdbExtras?.trailerKey ? (
+                <div className="rounded-2xl overflow-hidden border border-neutral-800 bg-black aspect-video">
+                  <iframe
+                    title={`${movie.title} trailer`}
+                    src={`https://www.youtube.com/embed/${tmdbExtras.trailerKey}`}
+                    className="w-full h-full"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                    loading="lazy"
+                  />
+                </div>
+              ) : (
+                <a
+                  href={movie.trailerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-red-400 hover:text-red-300"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Watch trailer
+                </a>
+              )}
+            </div>
+          )}
+
+          {tmdbExtras?.cast && tmdbExtras.cast.length > 0 && (
+            <div className="pt-6 border-t border-neutral-800/80">
+              <h2 className="text-lg font-bold text-white mb-3">Cast</h2>
+              <div className="flex gap-3 overflow-x-auto scrollbar-none pb-2">
+                {tmdbExtras.cast.map(person => (
+                  <div key={person.id} className="shrink-0 w-24 text-center">
+                    <div className="w-24 h-24 rounded-xl overflow-hidden bg-neutral-900 border border-neutral-800 mb-1.5">
+                      {person.profileUrl ? (
+                        <img
+                          src={person.profileUrl}
+                          alt={person.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-neutral-600 text-xs">
+                          N/A
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-semibold text-neutral-200 line-clamp-2">
+                      {person.name}
+                    </p>
+                    <p className="text-[10px] text-neutral-500 line-clamp-1">{person.character}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tmdbExtras?.productionCompanies && tmdbExtras.productionCompanies.length > 0 && (
+            <div className="pt-4">
+              <h2 className="text-sm font-bold text-neutral-300 mb-2">Production</h2>
+              <div className="flex flex-wrap gap-2">
+                {tmdbExtras.productionCompanies.map(c => (
+                  <span
+                    key={c.id}
+                    className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-neutral-800 text-[11px] text-neutral-300"
+                  >
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {movie.tmdbId && <TmdbAttribution className="pt-4 border-t border-neutral-800/80" />}
+
+          {relatedMovies.length > 0 && (
+            <div className="pt-6 border-t border-neutral-800/80">
+              <h2 className="text-lg font-bold text-white mb-4">Related Movies</h2>
+              <Stagger className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3" stagger={0.05}>
+                {relatedMovies.map(relMovie => (
+                  <StaggerItem key={relMovie.id} variant="scale-in">
+                    <div onClick={() => onSelectMovie(relMovie)} className="cursor-pointer group">
+                      <div className="aspect-[2/3] rounded-xl overflow-hidden bg-neutral-900 border border-neutral-800 group-hover:border-red-500/60 transition-colors">
+                        <img
+                          src={relMovie.posterUrl}
+                          alt={relMovie.title}
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                          onError={e => {
+                            (e.target as HTMLImageElement).src =
+                              'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80';
+                          }}
+                        />
+                      </div>
+                      <h5 className="text-xs font-semibold text-neutral-200 mt-1.5 truncate group-hover:text-red-400">
+                        {relMovie.title}
+                      </h5>
+                    </div>
+                  </StaggerItem>
+                ))}
+              </Stagger>
+            </div>
+          )}
+
+          {showAds && adSettings && (
+            <div className="pt-6 border-t border-neutral-800/80">
+              <BottomAdsRow
+                slots={adSlots}
+                settings={adSettings}
+                positions={['movie_details_below_related', 'home_footer']}
+              />
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+};

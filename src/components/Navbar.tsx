@@ -37,8 +37,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const navLinks = [
     { id: 'home', label: 'Home' },
     { id: 'trending', label: 'Trending' },
-    { id: 'movies', label: 'All Movies' },
-    { id: 'latest', label: 'Latest 2026' },
+    { id: 'movies', label: 'Hollywood' },
+    { id: 'latest', label: 'Upcoming' },
     { id: 'categories', label: 'Categories' }
   ];
 

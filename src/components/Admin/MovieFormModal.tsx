@@ -9,15 +9,13 @@ import {
   AlertCircle,
   ExternalLink,
   Sparkles,
-  Play,
   Search,
   Loader2,
   Globe,
   CheckCircle2,
-  ArrowDown,
-  Wand2
+  ArrowDown
 } from 'lucide-react';
-import { Movie } from '../../types.ts';
+import { Movie, TmdbDiscoveryItem } from '../../types.ts';
 import { api } from '../../services/api.ts';
 
 interface MovieFormModalProps {
@@ -25,13 +23,16 @@ interface MovieFormModalProps {
   onClose: () => void;
   onSaveSuccess: (savedMovie: Movie) => void;
   movieToEdit?: Movie | null;
+  /** Prefill form from a TMDB discovery item when adding (not editing). */
+  seedTmdbItem?: TmdbDiscoveryItem | null;
 }
 
 export const MovieFormModal: React.FC<MovieFormModalProps> = ({
   isOpen,
   onClose,
   onSaveSuccess,
-  movieToEdit
+  movieToEdit,
+  seedTmdbItem = null
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -54,13 +55,23 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [detectedFormat, setDetectedFormat] = useState<string>('');
 
-  // AI Movie Auto-Fill states
-  const [aiQuery, setAiQuery] = useState('');
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [aiSuccessMessage, setAiSuccessMessage] = useState<string | null>(null);
-  const [aiSources, setAiSources] = useState<Array<{ title: string; url: string }>>([]);
+  // TMDB import states
+  const [tmdbQuery, setTmdbQuery] = useState('');
+  const [tmdbSearching, setTmdbSearching] = useState(false);
+  const [tmdbImporting, setTmdbImporting] = useState(false);
+  const [tmdbResults, setTmdbResults] = useState<Array<TmdbDiscoveryItem & { alreadyImported?: boolean }>>([]);
+  const [selectedTmdbId, setSelectedTmdbId] = useState<number | null>(null);
+  const [tmdbId, setTmdbId] = useState<number | undefined>(undefined);
+  const [originalTitle, setOriginalTitle] = useState('');
+  const [posterPath, setPosterPath] = useState<string | null | undefined>(undefined);
+  const [backdropPath, setBackdropPath] = useState<string | null | undefined>(undefined);
+  const [releaseDate, setReleaseDate] = useState('');
+  const [runtime, setRuntime] = useState<number | undefined>(undefined);
+  const [trailerUrl, setTrailerUrl] = useState('');
+  const [tmdbSuccessMessage, setTmdbSuccessMessage] = useState<string | null>(null);
   const [highlightUrlField, setHighlightUrlField] = useState(false);
   const streamingUrlRef = useRef<HTMLInputElement>(null);
+  const tmdbSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const availableGenres = [
     'Action',
@@ -100,30 +111,139 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
       setIsPublished(movieToEdit.isPublished);
       setRating(movieToEdit.rating || 8.0);
       setDuration(movieToEdit.duration || '2h 10m');
+      setTmdbId(movieToEdit.tmdbId);
+      setOriginalTitle(movieToEdit.originalTitle || '');
+      setPosterPath(movieToEdit.posterPath);
+      setBackdropPath(movieToEdit.backdropPath);
+      setReleaseDate(movieToEdit.releaseDate || '');
+      setRuntime(movieToEdit.runtime);
+      setTrailerUrl(movieToEdit.trailerUrl || '');
+      setSelectedTmdbId(movieToEdit.tmdbId ?? null);
     } else {
-      // Defaults for new movie
       setTitle('');
       setDescription('');
-      setReleaseYear(2026);
+      setReleaseYear(new Date().getFullYear());
       setSelectedGenres(['Action', 'Drama']);
       setCategory('Action / Drama');
       setQuality('1080p');
-      setLanguage('Hindi + Telugu');
+      setLanguage('English');
       setStreamingUrl('');
-      setPosterUrl('https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80');
-      setBackdropUrl('https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80');
+      setPosterUrl('');
+      setBackdropUrl('');
       setIsFeatured(false);
       setIsTrending(true);
       setIsPopular(true);
       setIsPublished(true);
-      setRating(8.5);
-      setDuration('2h 20m');
+      setRating(8.0);
+      setDuration('2h 00m');
+      setTmdbId(undefined);
+      setOriginalTitle('');
+      setPosterPath(undefined);
+      setBackdropPath(undefined);
+      setReleaseDate('');
+      setRuntime(undefined);
+      setTrailerUrl('');
+      setSelectedTmdbId(null);
     }
     setError(null);
-    setAiSuccessMessage(null);
-    setAiSources([]);
+    setTmdbSuccessMessage(null);
+    setTmdbResults([]);
+    setTmdbQuery('');
     setHighlightUrlField(false);
   }, [movieToEdit, isOpen]);
+
+  const handleSelectTmdbResult = async (item: TmdbDiscoveryItem & { alreadyImported?: boolean }) => {
+    if (item.mediaType === 'tv') {
+      setError('TV import is browse-only for now. Select a movie title to import.');
+      return;
+    }
+
+    try {
+      setTmdbImporting(true);
+      setError(null);
+      setSelectedTmdbId(item.tmdbId);
+      const res = await api.getTmdbMovieForImport(item.tmdbId);
+      const m = res.metadata;
+
+      if (res.existingMovie && !movieToEdit) {
+        setError(
+          `"${res.existingMovie.title}" is already imported (TMDB #${item.tmdbId}). Edit that entry instead of creating a duplicate.`
+        );
+      }
+
+      setTmdbId(m.tmdbId);
+      setTitle(m.title || '');
+      setOriginalTitle(m.originalTitle || '');
+      setDescription(m.overview || m.description || '');
+      setReleaseYear(m.releaseYear);
+      setReleaseDate(m.releaseDate || '');
+      setSelectedGenres(m.genres?.length ? m.genres : ['Drama']);
+      setCategory(m.category || m.genres?.[0] || 'Drama');
+      setLanguage((m.language || 'EN').toUpperCase());
+      setRating(m.rating || 0);
+      setDuration(m.duration || '2h 00m');
+      setRuntime(m.runtime);
+      setPosterUrl(m.posterUrl || '');
+      setBackdropUrl(m.backdropUrl || '');
+      setPosterPath(m.posterPath);
+      setBackdropPath(m.backdropPath);
+      setTrailerUrl(m.trailerUrl || '');
+
+      setTmdbSuccessMessage(
+        `TMDB metadata loaded for "${m.title}". Review fields, then paste the actual movie playback URL below (trailer ≠ movie file).`
+      );
+      setHighlightUrlField(true);
+      setTmdbResults([]);
+      setTmdbQuery(m.title);
+
+      setTimeout(() => {
+        streamingUrlRef.current?.focus();
+        streamingUrlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 200);
+      setTimeout(() => setHighlightUrlField(false), 6000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load TMDB movie metadata');
+    } finally {
+      setTmdbImporting(false);
+    }
+  };
+
+  // Prefill from All TMDB Movies list ("+ URL" action)
+  useEffect(() => {
+    if (!isOpen || movieToEdit || !seedTmdbItem) return;
+    void handleSelectTmdbResult(seedTmdbItem);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when modal opens with a seed item
+  }, [isOpen, movieToEdit, seedTmdbItem?.tmdbId]);
+
+  // Debounced TMDB search while typing
+  useEffect(() => {
+    if (!isOpen) return;
+    if (tmdbSearchTimer.current) clearTimeout(tmdbSearchTimer.current);
+
+    const q = tmdbQuery.trim();
+    if (q.length < 2) {
+      setTmdbResults([]);
+      return;
+    }
+
+    tmdbSearchTimer.current = setTimeout(async () => {
+      try {
+        setTmdbSearching(true);
+        setError(null);
+        const res = await api.searchTmdbMovies(q);
+        setTmdbResults(res.results || []);
+      } catch (err: any) {
+        setError(err.message || 'TMDB search failed');
+        setTmdbResults([]);
+      } finally {
+        setTmdbSearching(false);
+      }
+    }, 400);
+
+    return () => {
+      if (tmdbSearchTimer.current) clearTimeout(tmdbSearchTimer.current);
+    };
+  }, [tmdbQuery, isOpen]);
 
   // Format detection on streamingUrl change
   useEffect(() => {
@@ -139,65 +259,6 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
     else if (clean.startsWith('ftp://')) setDetectedFormat('FTP Video Stream');
     else setDetectedFormat('Direct Video Stream URL');
   }, [streamingUrl]);
-
-  // AI Movie Search & Auto-Fill from Google
-  const handleAiAutoFill = async (customQuery?: string) => {
-    const q = (customQuery || aiQuery).trim();
-    if (!q) {
-      setError('Please enter a movie title to search with AI.');
-      return;
-    }
-
-    try {
-      setIsAiLoading(true);
-      setError(null);
-      setAiSuccessMessage(null);
-      setAiSources([]);
-
-      const res = await api.fetchMovieAiDetails(q);
-      const d = res.movieDetails;
-
-      if (d.title) setTitle(d.title);
-      if (d.description) setDescription(d.description);
-      if (d.releaseYear) setReleaseYear(Number(d.releaseYear));
-      if (d.genre && Array.isArray(d.genre) && d.genre.length > 0) {
-        setSelectedGenres(d.genre);
-      }
-      if (d.category) setCategory(d.category);
-      if (d.quality && ['480p', '720p', '1080p', '4K'].includes(d.quality)) {
-        setQuality(d.quality as '480p' | '720p' | '1080p' | '4K');
-      }
-      if (d.language) setLanguage(d.language);
-      if (d.rating) setRating(Number(d.rating));
-      if (d.duration) setDuration(d.duration);
-      if (d.posterUrl) setPosterUrl(d.posterUrl);
-      if (d.backdropUrl) setBackdropUrl(d.backdropUrl);
-
-      if (res.sources && res.sources.length > 0) {
-        setAiSources(res.sources);
-      }
-
-      setAiSuccessMessage(`✨ Details and official poster for "${d.title || q}" auto-filled from Google! Now simply paste your streaming video link below.`);
-      setHighlightUrlField(true);
-
-      // Focus the streaming URL field
-      setTimeout(() => {
-        if (streamingUrlRef.current) {
-          streamingUrlRef.current.focus();
-          streamingUrlRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }, 200);
-
-      // Dismiss highlight after 6 seconds
-      setTimeout(() => {
-        setHighlightUrlField(false);
-      }, 6000);
-    } catch (err: any) {
-      setError(`AI Auto-Fill Error: ${err.message || 'Failed to retrieve movie details.'}`);
-    } finally {
-      setIsAiLoading(false);
-    }
-  };
 
   if (!isOpen) return null;
 
@@ -217,8 +278,8 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
       setError('Movie title is required.');
       return;
     }
-    if (!streamingUrl.trim()) {
-      setError('Movie video streaming URL is required.');
+    if (!streamingUrl.trim() && !tmdbId) {
+      setError('Movie video streaming URL is required (or import with a TMDB id).');
       return;
     }
 
@@ -226,15 +287,16 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
       setSaving(true);
       setError(null);
 
+      const directUrl = streamingUrl.trim();
       const payload = {
         title: title.trim(),
         description: description.trim() || 'No description provided.',
-        releaseYear: Number(releaseYear) || 2026,
+        releaseYear: Number(releaseYear) || new Date().getFullYear(),
         genre: selectedGenres,
         category: category.trim() || selectedGenres.join(' / '),
         quality,
         language: language.trim(),
-        streamingUrl: streamingUrl.trim(),
+        streamingUrl: directUrl,
         posterUrl: posterUrl.trim() || presetPosters[0].url,
         backdropUrl: backdropUrl.trim() || undefined,
         isFeatured,
@@ -242,7 +304,15 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
         isPopular,
         isPublished,
         rating: Number(rating) || 8.0,
-        duration: duration.trim() || '2h 15m'
+        duration: duration.trim() || '2h 15m',
+        tmdbId,
+        originalTitle: originalTitle.trim() || undefined,
+        posterPath: posterPath ?? undefined,
+        backdropPath: backdropPath ?? undefined,
+        releaseDate: releaseDate || undefined,
+        runtime,
+        trailerUrl: trailerUrl.trim() || undefined,
+        manualPlaybackOverride: Boolean(directUrl)
       };
 
       let resultMovie: Movie;
@@ -302,121 +372,88 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6 max-h-[75vh] overflow-y-auto">
-          {/* AI Movie Search & Auto-Fill from Google */}
-          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-950/70 via-purple-950/50 to-neutral-900 border border-purple-500/50 p-5 shadow-xl shadow-purple-950/20">
-            <div className="flex items-center justify-between mb-2.5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 to-pink-500 flex items-center justify-center text-white shadow-md shadow-purple-900">
-                  <Wand2 className="w-4 h-4 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>AI Movie Auto-Fill from Google</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 uppercase tracking-wider">
-                      Google Search Grounded
-                    </span>
-                  </h3>
-                  <p className="text-xs text-neutral-300">
-                    Search any movie name to auto-fetch official poster, synopsis, year, genre & ratings from Google. You only need to add your video streaming link!
-                  </p>
-                </div>
+          {/* TMDB Search & Import */}
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-sky-950/70 via-neutral-900 to-neutral-950 border border-sky-500/40 p-5 shadow-xl">
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-8 h-8 rounded-xl bg-sky-600/20 border border-sky-500/40 flex items-center justify-center text-sky-400">
+                <Globe className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  Search TMDB
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 uppercase tracking-wider">
+                    Metadata only
+                  </span>
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  Type a title → pick a match → metadata auto-fills. Then paste your own playback URL (TMDB does not provide movie files).
+                </p>
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2 mt-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-purple-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  value={aiQuery}
-                  onChange={e => setAiQuery(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAiAutoFill();
-                    }
-                  }}
-                  placeholder="Type movie name (e.g. Pushpa 2, Kalki 2898 AD, Inception, Dune)..."
-                  className="w-full bg-neutral-950/90 border border-purple-500/40 focus:border-purple-400 rounded-xl pl-10 pr-8 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none transition-colors"
-                />
-                {aiQuery && (
+            <div className="relative">
+              <Search className="w-4 h-4 text-sky-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={tmdbQuery}
+                onChange={e => setTmdbQuery(e.target.value)}
+                placeholder="Search movie title on TMDB…"
+                className="w-full bg-neutral-950/90 border border-sky-500/40 focus:border-sky-400 rounded-xl pl-10 pr-10 py-2.5 text-sm text-white placeholder-neutral-500 focus:outline-none"
+              />
+              {(tmdbSearching || tmdbImporting) && (
+                <Loader2 className="w-4 h-4 animate-spin text-sky-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
+              )}
+            </div>
+
+            {tmdbResults.length > 0 && (
+              <div className="mt-3 max-h-56 overflow-y-auto rounded-xl border border-neutral-800 divide-y divide-neutral-800 bg-neutral-950/80">
+                {tmdbResults.map(item => (
                   <button
+                    key={item.tmdbId}
                     type="button"
-                    onClick={() => setAiQuery('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white cursor-pointer"
+                    disabled={tmdbImporting}
+                    onClick={() => handleSelectTmdbResult(item)}
+                    className={`w-full flex items-center gap-3 p-2.5 text-left hover:bg-neutral-900 transition-colors cursor-pointer ${
+                      selectedTmdbId === item.tmdbId ? 'bg-sky-950/40' : ''
+                    }`}
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => handleAiAutoFill()}
-                disabled={isAiLoading || !aiQuery.trim()}
-                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-pink-600 to-red-600 hover:from-purple-500 hover:to-red-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-lg shadow-purple-950 transition-all flex items-center justify-center gap-2 cursor-pointer shrink-0"
-              >
-                {isAiLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Searching Google...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>Auto-Fill Details</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Quick Suggestions */}
-            <div className="mt-3 flex items-center gap-1.5 flex-wrap">
-              <span className="text-[11px] text-neutral-400 font-medium">Quick Suggestions:</span>
-              {['Pushpa 2: The Rule', 'Kalki 2898 AD', 'Jawan', 'Animal', 'Dune: Part Two', 'The Paradise'].map(name => (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => {
-                    setAiQuery(name);
-                    handleAiAutoFill(name);
-                  }}
-                  disabled={isAiLoading}
-                  className="text-[11px] px-2.5 py-1 rounded-lg bg-neutral-900/80 hover:bg-purple-900/50 text-neutral-300 hover:text-purple-200 border border-neutral-700/60 hover:border-purple-500/50 transition-colors cursor-pointer"
-                >
-                  + {name}
-                </button>
-              ))}
-            </div>
-
-            {/* Success Banner */}
-            {aiSuccessMessage && (
-              <div className="mt-3.5 p-3.5 rounded-xl bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 text-xs flex items-start gap-2.5 animate-fadeIn">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div className="space-y-1.5">
-                  <p className="font-semibold text-emerald-200">{aiSuccessMessage}</p>
-                  {aiSources.length > 0 && (
-                    <div className="flex items-center gap-2 flex-wrap pt-0.5">
-                      <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                        <Globe className="w-3 h-3" /> Grounded Google Sources:
-                      </span>
-                      {aiSources.map((s, idx) => (
-                        <a
-                          key={idx}
-                          href={s.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[10px] text-emerald-300 hover:text-white underline truncate max-w-[150px] inline-flex items-center gap-0.5"
-                          title={s.title}
-                        >
-                          <span>{s.title}</span>
-                          <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                        </a>
-                      ))}
+                    <img
+                      src={
+                        item.posterUrl ||
+                        'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=200&auto=format&fit=crop&q=60'
+                      }
+                      alt=""
+                      className="w-10 h-14 object-cover rounded-md bg-neutral-900 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-white truncate">{item.title}</p>
+                      <p className="text-[11px] text-neutral-400">
+                        {item.releaseYear || '—'} · ★ {item.rating.toFixed(1)} · {item.language}
+                        {item.alreadyImported ? ' · Already imported' : ''}
+                      </p>
                     </div>
-                  )}
-                </div>
+                    {item.alreadyImported ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <Sparkles className="w-4 h-4 text-sky-400 shrink-0" />
+                    )}
+                  </button>
+                ))}
               </div>
+            )}
+
+            {tmdbSuccessMessage && (
+              <div className="mt-3.5 p-3.5 rounded-xl bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 text-xs flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <p className="font-medium">{tmdbSuccessMessage}</p>
+              </div>
+            )}
+
+            {tmdbId && (
+              <p className="mt-2 text-[11px] text-sky-400/90 font-mono">
+                Linked TMDB ID: {tmdbId}
+                {originalTitle ? ` · ${originalTitle}` : ''}
+              </p>
             )}
           </div>
 
@@ -429,8 +466,8 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
             <div className="flex items-center justify-between flex-wrap gap-2">
               <label className="text-sm font-bold text-white flex items-center gap-2">
                 <Link className={`w-4 h-4 ${highlightUrlField ? 'text-emerald-400' : 'text-red-500'}`} />
-                <span>Movie Video Streaming URL (Direct Link)</span>
-                <span className="text-xs text-red-400 font-normal">*required</span>
+                <span>Direct Stream Link</span>
+                <span className="text-xs text-neutral-500 font-normal">(optional)</span>
               </label>
 
               <div className="flex items-center gap-2">
@@ -449,35 +486,57 @@ export const MovieFormModal: React.FC<MovieFormModalProps> = ({
             </div>
 
             <p className="text-xs text-neutral-400">
-              Paste the direct video link (MP4, WebM, HLS .m3u8, or MKV). The movie player will stream it directly in the browser, or provide an "Open Movie Link" button if restricted.
+              Add your direct video URL (MP4 / HLS / MKV). When set, Play uses this link (no provider stream) and opens
+              your ad once in a new tab. Leave empty to keep normal provider streaming (provider ads).
             </p>
 
             <div className="flex gap-2">
               <input
                 ref={streamingUrlRef}
-                type="text"
+                type="url"
                 value={streamingUrl}
                 onChange={e => setStreamingUrl(e.target.value)}
-                placeholder="http://ftp13.circleftp.net/.../The%20Paradise.mkv or https://.../movie.mp4"
+                placeholder="https://…/movie.mp4  or  http://…/movie.mkv"
                 className={`flex-1 bg-neutral-950 border rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder-neutral-600 focus:outline-none transition-all ${
                   highlightUrlField
                     ? 'border-emerald-400 focus:border-emerald-300 ring-2 ring-emerald-500/40'
                     : 'border-neutral-700 focus:border-red-500'
                 }`}
-                required
               />
-              {streamingUrl && (
-                <a
-                  href={streamingUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Test link in new tab"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Test Link</span>
-                </a>
+              {streamingUrl.trim() && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setStreamingUrl('')}
+                    className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700 rounded-xl text-xs font-semibold cursor-pointer"
+                    title="Clear link — fall back to provider streaming"
+                  >
+                    Clear
+                  </button>
+                  <a
+                    href={streamingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Test link in new tab"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Test</span>
+                  </a>
+                </>
               )}
+            </div>
+
+            <div
+              className={`text-[11px] rounded-lg px-3 py-2 border ${
+                streamingUrl.trim()
+                  ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-300'
+                  : 'bg-sky-950/30 border-sky-800/40 text-sky-300'
+              }`}
+            >
+              {streamingUrl.trim()
+                ? 'Mode: Direct link playback + your site ad (1× new tab on Play)'
+                : 'Mode: Provider streaming (provider player ads) — add a link above to override'}
             </div>
           </div>
 

@@ -55,6 +55,7 @@ export const MovieCard: React.FC<MovieCardProps> = ({ movie, onPlay, onDetails, 
       )}
 
       <div
+        onClick={() => onDetails(movie)}
         className={`relative w-40 sm:w-48 md:w-56 aspect-[2/3] rounded-xl overflow-hidden bg-neutral-900 border border-neutral-800/80 shadow-lg group-hover:shadow-2xl group-hover:shadow-red-950/40 group-hover:border-neutral-700 transition-colors duration-300 cursor-pointer ${
           rank !== undefined ? 'ml-6' : ''
         }`}

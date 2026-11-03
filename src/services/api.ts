@@ -1,4 +1,17 @@
-import { Movie, Category, AdminUser, AdminStats, FilterState, AdSlot, AdSettings, AdAnalyticsReport } from '../types.ts';
+import {
+  Movie,
+  Category,
+  AdminUser,
+  AdminStats,
+  FilterState,
+  AdSlot,
+  AdSettings,
+  AdAnalyticsReport,
+  TmdbDiscoveryItem,
+  TmdbMovieFullDetails,
+  StreamAssociation,
+  StreamingAdminStats
+} from '../types.ts';
 
 const TOKEN_KEY = 'cinestream_admin_token';
 const ADMIN_USER_KEY = 'cinestream_admin_user';
@@ -70,8 +83,101 @@ export const api = {
     return apiRequest<{ hero: Movie | null; trending: Movie[]; popular: Movie[]; latest: Movie[] }>('/api/featured');
   },
 
-  async getMovieById(id: string): Promise<{ movie: Movie; related: Movie[] }> {
-    return apiRequest<{ movie: Movie; related: Movie[] }>(`/api/movies/${id}`);
+  async getMovieById(id: string): Promise<{
+    movie: Movie;
+    related: Movie[];
+    tmdbExtras?: Partial<TmdbMovieFullDetails> & {
+      similarTmdb?: TmdbDiscoveryItem[];
+      recommendationsTmdb?: TmdbDiscoveryItem[];
+      trailerKey?: string;
+    } | null;
+  }> {
+    return apiRequest(`/api/movies/${id}`);
+  },
+
+  // TMDB discovery (proxied via backend — no secrets in browser)
+  async getTmdbStatus(): Promise<{ configured: boolean; imageBaseUrl: string }> {
+    return apiRequest('/api/tmdb/status');
+  },
+
+  async getTmdbDiscover(page = 1): Promise<{
+    page: number;
+    trending: TmdbDiscoveryItem[];
+    hollywood: TmdbDiscoveryItem[];
+    bollywood: TmdbDiscoveryItem[];
+    southIndian: TmdbDiscoveryItem[];
+    bengali: TmdbDiscoveryItem[];
+    topRated: TmdbDiscoveryItem[];
+    upcoming: TmdbDiscoveryItem[];
+    popular: TmdbDiscoveryItem[];
+    nowPlaying: TmdbDiscoveryItem[];
+    popularTv: TmdbDiscoveryItem[];
+    pages?: Record<string, number>;
+    sectionErrors?: Record<string, string>;
+  }> {
+    return apiRequest(`/api/tmdb/discover?page=${page}`);
+  },
+
+  async getTmdbList(
+    list:
+      | 'trending'
+      | 'popular'
+      | 'top-rated'
+      | 'now-playing'
+      | 'upcoming'
+      | 'tv-popular'
+      | 'hollywood'
+      | 'bollywood'
+      | 'south-indian'
+      | 'bengali',
+    page = 1
+  ): Promise<{ results: TmdbDiscoveryItem[]; page: number; totalPages: number; totalResults?: number }> {
+    return apiRequest(`/api/tmdb/${list}?page=${page}`);
+  },
+
+  async getTmdbSection(
+    section:
+      | 'trending'
+      | 'hollywood'
+      | 'bollywood'
+      | 'south-indian'
+      | 'bengali'
+      | 'top-rated'
+      | 'upcoming'
+      | 'popular'
+      | 'now-playing'
+      | 'tv-popular',
+    page = 1
+  ): Promise<{
+    section: string;
+    label: string;
+    languages: string[] | null;
+    results: TmdbDiscoveryItem[];
+    page: number;
+    totalPages: number;
+    totalResults: number;
+  }> {
+    return apiRequest(`/api/tmdb/section/${section}?page=${page}`);
+  },
+
+  async getTmdbMovieDetails(tmdbId: number): Promise<{ details: TmdbMovieFullDetails }> {
+    return apiRequest(`/api/tmdb/movie/${tmdbId}`);
+  },
+
+  async searchTmdbMovies(query: string, page = 1): Promise<{
+    results: Array<TmdbDiscoveryItem & { alreadyImported?: boolean }>;
+    page: number;
+    totalPages: number;
+    totalResults: number;
+  }> {
+    return apiRequest(`/api/admin/tmdb/search?q=${encodeURIComponent(query)}&page=${page}`);
+  },
+
+  async getTmdbMovieForImport(tmdbId: number): Promise<{
+    metadata: TmdbMovieFullDetails;
+    existingMovie: Movie | null;
+  }> {
+    return apiRequest(`/api/admin/tmdb/movie/${tmdbId}`);
   },
 
   async recordView(id: string): Promise<void> {
@@ -158,6 +264,16 @@ export const api = {
     });
   },
 
+  async importTmdbMovie(
+    tmdbId: number,
+    options: Partial<Pick<Movie, 'isFeatured' | 'isTrending' | 'isPopular' | 'isPublished'>> = {}
+  ): Promise<{ movie: Movie }> {
+    return apiRequest<{ movie: Movie }>('/api/admin/movies/import-tmdb', {
+      method: 'POST',
+      body: JSON.stringify({ tmdbId, ...options })
+    });
+  },
+
   async updateMovie(id: string, updates: Partial<Movie>): Promise<{ movie: Movie }> {
     return apiRequest<{ movie: Movie }>(`/api/admin/movies/${id}`, {
       method: 'PUT',
@@ -235,5 +351,123 @@ export const api = {
 
   async getAdminAdAnalytics(): Promise<{ analytics: AdAnalyticsReport }> {
     return apiRequest<{ analytics: AdAnalyticsReport }>('/api/admin/ads/analytics');
+  },
+
+  // Multi-provider streaming management (admin)
+  async getNexStreamStatus(): Promise<{
+    configured: boolean;
+    baseUrl: string | null;
+    matchingMode: string;
+  }> {
+    return apiRequest('/api/nexstream/status');
+  },
+
+  async getProvidersStatus(): Promise<{
+    priority: string[];
+    nexstream: { configured: boolean; baseUrl: string | null };
+    vidsrc: { configured: boolean; baseUrl: string | null };
+  }> {
+    return apiRequest('/api/providers/status');
+  },
+
+  async getStreamingStats(): Promise<{
+    configured: boolean;
+    providers?: { nexstream: boolean; vidsrc: boolean };
+    trackedMovies?: number;
+    tmdbLive?: {
+      configured: boolean;
+      popularTotal: number;
+      trendingTotal: number;
+      fetchedAt: string;
+    } | null;
+    stats: StreamingAdminStats;
+  }> {
+    return apiRequest('/api/admin/streaming/stats');
+  },
+
+  async getStreamAssociations(
+    status: string = 'all',
+    provider: string = 'all'
+  ): Promise<{
+    associations: StreamAssociation[];
+    count: number;
+  }> {
+    return apiRequest(
+      `/api/admin/streaming/associations?status=${encodeURIComponent(status)}&provider=${encodeURIComponent(provider)}`
+    );
+  },
+
+  async retryStreamMatch(
+    tmdbId: number,
+    options: { force?: boolean; confirmOverwriteManual?: boolean } = {}
+  ): Promise<{ result: unknown }> {
+    return apiRequest(`/api/admin/streaming/match/${tmdbId}`, {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+  },
+
+  async syncStreaming(options: {
+    force?: boolean;
+    onlyUnavailable?: boolean;
+    limit?: number;
+  } = {}): Promise<{ summary: unknown }> {
+    return apiRequest('/api/admin/streaming/sync', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+  },
+
+  async syncStreamingFromTmdbList(options: {
+    list?: string;
+    page?: number;
+    force?: boolean;
+  } = {}): Promise<{ summary: unknown; importedCandidates: number }> {
+    return apiRequest('/api/admin/streaming/sync-tmdb-list', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+  },
+
+  async disableStream(
+    tmdbId: number,
+    disabled = true,
+    provider?: string
+  ): Promise<{ association: StreamAssociation }> {
+    return apiRequest(`/api/admin/streaming/${tmdbId}/disable`, {
+      method: 'POST',
+      body: JSON.stringify({ disabled, provider })
+    });
+  },
+
+  async approveUncertainStream(
+    tmdbId: number,
+    provider?: string
+  ): Promise<{ association: StreamAssociation }> {
+    return apiRequest(`/api/admin/streaming/${tmdbId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ provider })
+    });
+  },
+
+  async selectStreamProvider(
+    tmdbId: number,
+    provider: string,
+    options: { confirmOverwriteManual?: boolean } = {}
+  ): Promise<{ association: StreamAssociation }> {
+    return apiRequest(`/api/admin/streaming/${tmdbId}/select`, {
+      method: 'POST',
+      body: JSON.stringify({ provider, ...options })
+    });
+  },
+
+  async refreshStreamStatus(
+    tmdbId: number,
+    options: { confirmOverwriteManual?: boolean } = {}
+  ): Promise<{ result: unknown }> {
+    return apiRequest(`/api/admin/streaming/${tmdbId}/refresh`, {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
   }
 };

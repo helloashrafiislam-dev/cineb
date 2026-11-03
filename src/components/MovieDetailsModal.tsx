@@ -1,10 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { X, Play, Star, Calendar, Clock, Film, Globe, Layers, Eye, ExternalLink } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
-import { Movie, AdSlot, AdSettings } from '../types.ts';
+import { Movie, AdSlot, AdSettings, TmdbPersonCredit, TmdbCompanyInfo } from '../types.ts';
 import { api } from '../services/api.ts';
 import { AdBanner } from './Ads/AdBanner.tsx';
 import { Stagger, StaggerItem } from './motion/Reveal.tsx';
+import { TmdbAttribution } from './TmdbAttribution.tsx';
+
+interface LocalTmdbExtras {
+  cast?: TmdbPersonCredit[];
+  crew?: TmdbPersonCredit[];
+  productionCompanies?: TmdbCompanyInfo[];
+  trailerUrl?: string;
+  trailerKey?: string;
+  originalTitle?: string;
+  runtime?: number;
+}
 
 interface MovieDetailsModalProps {
   movie: Movie | null;
@@ -25,20 +36,28 @@ export const MovieDetailsModal: React.FC<MovieDetailsModalProps> = ({
 }) => {
   const [relatedMovies, setRelatedMovies] = useState<Movie[]>([]);
   const [loadingRelated, setLoadingRelated] = useState(false);
+  const [tmdbExtras, setTmdbExtras] = useState<LocalTmdbExtras | null>(null);
 
   useEffect(() => {
     if (!movie) return;
 
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    document.title = `${movie.title} (${movie.releaseYear}) | CineStream`;
+    const descMeta = document.querySelector('meta[name="description"]');
+    if (descMeta && movie.description) {
+      descMeta.setAttribute('content', movie.description.slice(0, 160));
+    }
 
     let isMounted = true;
     const fetchDetails = async () => {
       try {
         setLoadingRelated(true);
+        setTmdbExtras(null);
         const data = await api.getMovieById(movie.id);
         if (isMounted) {
           setRelatedMovies(data.related || []);
+          setTmdbExtras((data.tmdbExtras as LocalTmdbExtras) || null);
         }
       } catch (err) {
         console.error('Failed to load related movies:', err);
@@ -51,6 +70,7 @@ export const MovieDetailsModal: React.FC<MovieDetailsModalProps> = ({
     return () => {
       isMounted = false;
       document.body.style.overflow = prevOverflow;
+      document.title = 'CineStream - Modern Movie Streaming & Admin Platform';
     };
   }, [movie]);
 
@@ -304,6 +324,84 @@ export const MovieDetailsModal: React.FC<MovieDetailsModalProps> = ({
               </div>
             </div>
           </div>
+
+          {(tmdbExtras?.trailerKey || movie.trailerUrl) && (
+            <div className="pt-6 border-t border-neutral-800/80 space-y-3">
+              <h3 className="text-lg font-bold text-white">Official Trailer</h3>
+              {tmdbExtras?.trailerKey ? (
+                <div className="rounded-2xl overflow-hidden border border-neutral-800 bg-black aspect-video">
+                  <iframe
+                    title={`${movie.title} trailer`}
+                    src={`https://www.youtube.com/embed/${tmdbExtras.trailerKey}`}
+                    className="w-full h-full"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                    loading="lazy"
+                  />
+                </div>
+              ) : (
+                <a
+                  href={movie.trailerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 text-sm text-red-400 hover:text-red-300"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Watch trailer
+                </a>
+              )}
+            </div>
+          )}
+
+          {tmdbExtras?.cast && tmdbExtras.cast.length > 0 && (
+            <div className="pt-6 border-t border-neutral-800/80">
+              <h3 className="text-lg font-bold text-white mb-3">Cast</h3>
+              <div className="flex gap-3 overflow-x-auto scrollbar-none pb-2">
+                {tmdbExtras.cast.map(person => (
+                  <div key={person.id} className="shrink-0 w-24 text-center">
+                    <div className="w-24 h-24 rounded-xl overflow-hidden bg-neutral-900 border border-neutral-800 mb-1.5">
+                      {person.profileUrl ? (
+                        <img
+                          src={person.profileUrl}
+                          alt={person.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-neutral-600 text-xs">
+                          N/A
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[11px] font-semibold text-neutral-200 line-clamp-2">
+                      {person.name}
+                    </p>
+                    <p className="text-[10px] text-neutral-500 line-clamp-1">{person.character}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tmdbExtras?.productionCompanies && tmdbExtras.productionCompanies.length > 0 && (
+            <div className="pt-4">
+              <h3 className="text-sm font-bold text-neutral-300 mb-2">Production</h3>
+              <div className="flex flex-wrap gap-2">
+                {tmdbExtras.productionCompanies.map(c => (
+                  <span
+                    key={c.id}
+                    className="px-2.5 py-1 rounded-lg bg-neutral-900 border border-neutral-800 text-[11px] text-neutral-300"
+                  >
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {movie.tmdbId && (
+            <TmdbAttribution className="pt-4 border-t border-neutral-800/80" />
+          )}
 
           {relatedMovies.length > 0 && (
             <div className="pt-6 border-t border-neutral-800/80">
