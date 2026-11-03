@@ -1,0 +1,6 @@
+{
+  "name": "CineStream - Modern Movie Streaming & Admin Platform",
+  "description": "Stream premium movies in HD and 4K with genre browsing, instant URL playback, and a powerful admin management dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
