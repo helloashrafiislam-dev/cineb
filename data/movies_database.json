@@ -550,7 +550,7 @@
     "dmcaEmail": "contact@example.com",
     "legalEntityName": "CineStream",
     "siteName": "CineStream",
-    "requireVerifiedProvidersForPlayback": true
+    "requireVerifiedProvidersForPlayback": false
   },
   "disputedTmdbIds": [],
   "disputedMovieIds": []
