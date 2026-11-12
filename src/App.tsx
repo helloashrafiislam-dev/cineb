@@ -33,6 +33,7 @@ import {
 } from './utils/slug.ts';
 import { BottomAdsRow } from './components/Ads/BottomAdsRow.tsx';
 import { LegalPages, LegalPageId } from './components/Legal/LegalPages.tsx';
+import { Analytics } from '@vercel/analytics/react';
 
 const LEGAL_PATHS: Record<string, LegalPageId> = {
   '/about': 'about',
@@ -968,6 +969,7 @@ export default function App() {
       {adSettings && (
         <PopupAdManager slots={adSlots} settings={adSettings} />
       )}
+      <Analytics />
     </div>
   );
 }
